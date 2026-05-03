@@ -82,8 +82,7 @@
     <h3>请求参数 (Query Parameters)</h3>
     <ul>
         <li><code>out_prop</code> (必填): 需要计算的输出属性代码，例如 "H" (焓, kJ/kg), "W" (含湿量, kg/kg), "V" (比容, m³/kg)。</li>
-        <li><code>in_prop1</code>, <code>in_prop2</code>, <code>in_prop3</code> (必填): 三个已知属性的代码，例如 "P", "T", "R"。</li>
-        <li><code>in_val1</code>, <code>in_val2</code>, <code>in_val3</code> (必填): 对应三个已知属性的数值。</li>
+        <li>直接提供另外三个已知属性代码作为参数名，并赋予其对应的数值。例如: <code>P=101325</code>, <code>T=25</code>, <code>R=0.5</code>。必须且仅需提供三个。</li>
     </ul>
     
     <p><strong>注意：</strong> 本接口已经自动处理了常用单位转换：</p>
@@ -95,11 +94,16 @@
 
     <h3>请求示例</h3>
     <p>计算在 101325 Pa 大气压、干球温度 25 ℃ 且相对湿度为 50% (0.5) 时湿空气的焓值 (kJ/kg)：</p>
-    <pre><code>GET /haprops?out_prop=H&in_prop1=P&in_val1=101325&in_prop2=T&in_val2=25&in_prop3=R&in_val3=0.5</code></pre>
+    <pre><code>GET /haprops?out_prop=H&P=101325&T=25&R=0.5</code></pre>
 
     <h3>响应示例</h3>
     <pre><code>{
   "requested_property": "H",
+  "inputs": {
+    "P": 101325.0,
+    "T": 25.0,
+    "R": 0.5
+  },
   "value": 50.41,
   "status": "success"
 }</code></pre>
