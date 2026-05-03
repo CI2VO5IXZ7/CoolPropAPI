@@ -2,10 +2,6 @@
 
 基于 **FastAPI** + **CoolProp** 构建的湿空气物性计算 HTTP 服务，专为焓湿图 (h-d chart) 计算场景设计。
 
-- 默认在线地址：<https://coolpropapi.zeabur.app>
-- 交互文档：<https://coolpropapi.zeabur.app/docs>
-- 中文说明主页：<https://coolpropapi.zeabur.app/>
-
 ## 特性
 
 - ✅ 直观的调用方式，属性代码即查询参数名，例如 `?out_prop=H&P=101325&T=25&R=0.5`
