@@ -1,15 +1,38 @@
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 import CoolProp.CoolProp as CP
 
 app = FastAPI(
     title="湿空气物性计算 API",
     description="基于 Python FastAPI 和 CoolProp 的湿空气物性计算服务",
-    version="1.0.0"
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None
 )
 
 templates = Jinja2Templates(directory="templates")
+
+# 自定义 Swagger UI 静态资源 CDN 解决默认 jsdelivr 加载缓慢/失败的问题
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " - Swagger UI",
+        oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+        swagger_js_url="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.9.0/swagger-ui-bundle.js",
+        swagger_css_url="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.9.0/swagger-ui.css",
+    )
+
+# 自定义 ReDoc 静态资源 CDN
+@app.get("/redoc", include_in_schema=False)
+async def redoc_html():
+    return get_redoc_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " - ReDoc",
+        redoc_js_url="https://cdnjs.cloudflare.com/ajax/libs/redoc/2.0.0-rc.77/redoc.standalone.js",
+    )
 
 # 单位转换辅助函数
 def convert_input(prop: str, val: float) -> float:
