@@ -75,42 +75,47 @@
     <h2>API 使用说明</h2>
 
     <div class="endpoint">
-        <span class="method">GET</span> <code>/props</code>
-        <p>计算流体的热力学性质。</p>
+        <span class="method">GET</span> <code>/haprops</code>
+        <p>计算湿空气的热力学性质，特别适用于绘制或计算焓湿图数据。</p>
     </div>
 
     <h3>请求参数 (Query Parameters)</h3>
     <ul>
-        <li><code>fluid</code> (必填): 流体名称，例如 "Water", "Nitrogen", "R134a"。</li>
-        <li><code>out_prop</code> (必填): 需要计算的输出属性代码，例如 "H" (焓), "S" (熵), "D" (密度)。</li>
-        <li><code>in_prop1</code> (必填): 第一个已知属性代码，例如 "P" (压力)。</li>
-        <li><code>in_val1</code> (必填): 第一个已知属性的数值。</li>
-        <li><code>in_prop2</code> (必填): 第二个已知属性代码，例如 "T" (温度)。</li>
-        <li><code>in_val2</code> (必填): 第二个已知属性的数值。</li>
+        <li><code>out_prop</code> (必填): 需要计算的输出属性代码，例如 "H" (焓, kJ/kg), "W" (含湿量, kg/kg), "V" (比容, m³/kg)。</li>
+        <li><code>in_prop1</code>, <code>in_prop2</code>, <code>in_prop3</code> (必填): 三个已知属性的代码，例如 "P", "T", "R"。</li>
+        <li><code>in_val1</code>, <code>in_val2</code>, <code>in_val3</code> (必填): 对应三个已知属性的数值。</li>
+    </ul>
+    
+    <p><strong>注意：</strong> 本接口已经自动处理了常用单位转换：</p>
+    <ul>
+        <li>所有温度 (代码 <code>T</code>, <code>Twb</code>, <code>Tdp</code>) 输入和输出单位均为 <strong>℃</strong> (摄氏度)</li>
+        <li>所有焓值 (代码 <code>H</code>, <code>Hda</code>) 输入和输出单位均为 <strong>kJ/kg</strong></li>
+        <li>压力单位仍为 <strong>Pa</strong></li>
     </ul>
 
     <h3>请求示例</h3>
-    <p>计算在 101325 Pa 和 300 K 下水的密度：</p>
-    <pre><code>GET /props?fluid=Water&out_prop=D&in_prop1=P&in_val1=101325&in_prop2=T&in_val2=300</code></pre>
+    <p>计算在 101325 Pa 大气压、干球温度 25 ℃ 且相对湿度为 50% (0.5) 时湿空气的焓值 (kJ/kg)：</p>
+    <pre><code>GET /haprops?out_prop=H&in_prop1=P&in_val1=101325&in_prop2=T&in_val2=25&in_prop3=R&in_val3=0.5</code></pre>
 
     <h3>响应示例</h3>
     <pre><code>{
-  "fluid": "Water",
-  "requested_property": "D",
-  "value": 996.556,
-  "unit": "kg/m^3 (approx)"
+  "requested_property": "H",
+  "value": 50.41,
+  "status": "success"
 }</code></pre>
 
-    <h2>支持的属性代码参考</h2>
+    <h2>湿空气属性代码参考</h2>
     <ul>
-        <li><code>T</code> : 温度 (K)</li>
+        <li><code>T</code> : 干球温度 (℃)</li>
+        <li><code>Twb</code> : 湿球温度 (℃)</li>
+        <li><code>Tdp</code> : 露点温度 (℃)</li>
         <li><code>P</code> : 压力 (Pa)</li>
-        <li><code>H</code> : 质量焓 (J/kg)</li>
-        <li><code>S</code> : 质量熵 (J/kg/K)</li>
-        <li><code>D</code> : 质量密度 (kg/m^3)</li>
-        <li><code>Q</code> : 质量蒸汽品质 (mol/mol 或 kg/kg)</li>
+        <li><code>H</code> : 湿空气比焓 (kJ/kg 绝干气)</li>
+        <li><code>W</code> : 含湿量 (kg 水蒸气 / kg 绝干气)</li>
+        <li><code>R</code> : 相对湿度 (0 ~ 1)</li>
+        <li><code>V</code> : 湿空气比容 (m³/kg 绝干气)</li>
     </ul>
-    <p>更多详情请参考 <a href="http://www.coolprop.org/coolprop/HighLevelAPI.html" target="_blank">CoolProp 官方文档</a>。</p>
+    <p>更多详情请参考 <a href="http://www.coolprop.org/fluid_properties/HumidAir.html" target="_blank">CoolProp 湿空气文档</a>。</p>
 
 </body>
 </html>
