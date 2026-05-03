@@ -3,123 +3,357 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CoolProp API 服务</title>
+    <title>湿空气物性计算 API</title>
     <style>
+        * { box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        h1 {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            line-height: 1.7;
             color: #2c3e50;
-            border-bottom: 2px solid #eee;
-            padding-bottom: 10px;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 24px;
+            background: #fafbfc;
         }
-        h2 {
-            color: #34495e;
-            margin-top: 30px;
-        }
-        .endpoint {
-            background: #f8f9fa;
-            border-left: 4px solid #3498db;
-            padding: 15px;
-            margin: 20px 0;
+        h1 { color: #1a202c; border-bottom: 3px solid #3498db; padding-bottom: 12px; margin-bottom: 6px; }
+        h2 { color: #2c3e50; margin-top: 36px; border-left: 4px solid #3498db; padding-left: 10px; }
+        h3 { color: #34495e; margin-top: 22px; }
+        .sub { color: #718096; margin-top: 0; }
+
+        .links { margin: 20px 0; }
+        .links a {
+            display: inline-block;
+            margin-right: 10px;
+            padding: 6px 14px;
+            background: #3498db;
+            color: #fff;
             border-radius: 4px;
+            text-decoration: none;
+            font-size: 0.9em;
+        }
+        .links a:hover { background: #2980b9; }
+        .links a.secondary { background: #95a5a6; }
+        .links a.secondary:hover { background: #7f8c8d; }
+
+        .endpoint {
+            background: #fff;
+            border-left: 4px solid #27ae60;
+            padding: 14px 18px;
+            margin: 16px 0;
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         }
         .method {
             display: inline-block;
-            background: #2ecc71;
-            color: white;
-            padding: 3px 8px;
+            background: #27ae60;
+            color: #fff;
+            padding: 2px 10px;
             border-radius: 3px;
-            font-weight: bold;
-            font-size: 0.9em;
+            font-weight: 700;
+            font-size: 0.85em;
+            margin-right: 8px;
         }
+        .method.post { background: #e67e22; }
+
         code {
-            background: #eee;
-            padding: 2px 5px;
+            background: #edf2f7;
+            padding: 2px 6px;
             border-radius: 3px;
-            font-family: monospace;
+            font-family: "JetBrains Mono", Consolas, Monaco, monospace;
+            font-size: 0.9em;
+            color: #c0392b;
         }
         pre {
-            background: #282c34;
-            color: #abb2bf;
-            padding: 15px;
-            border-radius: 5px;
+            background: #1e2330;
+            color: #e2e8f0;
+            padding: 16px;
+            border-radius: 6px;
             overflow-x: auto;
+            font-size: 0.88em;
         }
-        .links a {
-            display: inline-block;
-            margin-right: 15px;
-            color: #3498db;
-            text-decoration: none;
-            font-weight: bold;
+        pre code { background: transparent; color: inherit; padding: 0; }
+
+        table { width: 100%; border-collapse: collapse; margin: 14px 0; background: #fff; }
+        th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f7fafc; color: #2d3748; font-weight: 600; }
+        td code { color: #2c5282; }
+
+        .tip {
+            background: #fffaf0;
+            border-left: 4px solid #f6ad55;
+            padding: 12px 16px;
+            margin: 14px 0;
+            border-radius: 4px;
         }
-        .links a:hover {
-            text-decoration: underline;
+
+        /* 交互式表单 */
+        .playground {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+        .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 12px; }
+        .field { display: flex; flex-direction: column; flex: 1 1 140px; min-width: 120px; }
+        label { font-size: 0.85em; color: #4a5568; margin-bottom: 4px; }
+        input, select, button {
+            padding: 8px 10px;
+            border: 1px solid #cbd5e0;
+            border-radius: 4px;
+            font-size: 0.95em;
+            font-family: inherit;
+        }
+        button {
+            background: #3498db;
+            color: #fff;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            padding: 9px 18px;
+        }
+        button:hover { background: #2980b9; }
+        .result {
+            background: #1e2330;
+            color: #68d391;
+            padding: 14px;
+            border-radius: 4px;
+            margin-top: 12px;
+            font-family: Consolas, Monaco, monospace;
+            font-size: 0.9em;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .request-url {
+            background: #f7fafc;
+            padding: 8px 12px;
+            border-radius: 4px;
+            margin-top: 8px;
+            font-family: Consolas, Monaco, monospace;
+            font-size: 0.85em;
+            color: #2d3748;
+            word-break: break-all;
+            border: 1px dashed #cbd5e0;
         }
     </style>
 </head>
 <body>
-    <h1>CoolProp API 服务</h1>
-    <p>欢迎使用基于 Python 和 CoolProp 构建的物性计算 API 服务。</p>
-    
+    <h1>湿空气物性计算 API</h1>
+    <p class="sub">基于 <strong>FastAPI</strong> + <strong>CoolProp</strong> 构建，专为焓湿图 (h-d chart) 计算设计。支持 ℃ 和 kJ/kg 等工程常用单位直接输入输出。</p>
+
     <div class="links">
         <a href="/docs">📚 Swagger 交互式文档</a>
-        <a href="/redoc">📖 ReDoc 文档</a>
+        <a href="/redoc" class="secondary">📖 ReDoc 文档</a>
+        <a href="/haprops/keys" class="secondary">🔑 查看属性代码</a>
     </div>
 
-    <h2>API 使用说明</h2>
+    <h2>一、接口一览</h2>
 
     <div class="endpoint">
-        <span class="method">GET</span> <code>/haprops</code>
-        <p>计算湿空气的热力学性质，特别适用于绘制或计算焓湿图数据。</p>
+        <span class="method">GET</span><code>/haprops</code>
+        <p style="margin:6px 0 0;">计算单点湿空气物性。直接把已知属性作为查询参数名。</p>
     </div>
 
-    <h3>请求参数 (Query Parameters)</h3>
-    <ul>
-        <li><code>out_prop</code> (必填): 需要计算的输出属性代码，例如 "H" (焓, kJ/kg), "W" (含湿量, kg/kg), "V" (比容, m³/kg)。</li>
-        <li>直接提供另外三个已知属性代码作为参数名，并赋予其对应的数值。例如: <code>P=101325</code>, <code>T=25</code>, <code>R=0.5</code>。必须且仅需提供三个。</li>
-    </ul>
-    
-    <p><strong>注意：</strong> 本接口已经自动处理了常用单位转换：</p>
-    <ul>
-        <li>所有温度 (代码 <code>T</code>, <code>Twb</code>, <code>Tdp</code>) 输入和输出单位均为 <strong>℃</strong> (摄氏度)</li>
-        <li>所有焓值 (代码 <code>H</code>, <code>Hda</code>) 输入和输出单位均为 <strong>kJ/kg</strong></li>
-        <li>压力单位仍为 <strong>Pa</strong></li>
-    </ul>
+    <div class="endpoint">
+        <span class="method post">POST</span><code>/haprops/batch</code>
+        <p style="margin:6px 0 0;">批量计算（绘制焓湿图等）。JSON Body 传入多组状态点。</p>
+    </div>
 
-    <h3>请求示例</h3>
-    <p>计算在 101325 Pa 大气压、干球温度 25 ℃ 且相对湿度为 50% (0.5) 时湿空气的焓值 (kJ/kg)：</p>
+    <div class="endpoint">
+        <span class="method">GET</span><code>/haprops/keys</code>
+        <p style="margin:6px 0 0;">查询所有可用的属性代码与单位说明。</p>
+    </div>
+
+    <div class="endpoint">
+        <span class="method">GET</span><code>/health</code>
+        <p style="margin:6px 0 0;">健康检查。</p>
+    </div>
+
+    <h2>二、在线试用 (Playground)</h2>
+    <div class="playground">
+        <p style="margin-top:0;">填写下方表单实时调用 API，结果立即返回。</p>
+        <div class="row">
+            <div class="field">
+                <label>输出属性 out_prop</label>
+                <select id="out_prop">
+                    <option value="H">H — 比焓 (kJ/kg)</option>
+                    <option value="W">W — 含湿量 (kg/kg)</option>
+                    <option value="R">R — 相对湿度 (0-1)</option>
+                    <option value="Twb">Twb — 湿球温度 (℃)</option>
+                    <option value="Tdp">Tdp — 露点温度 (℃)</option>
+                    <option value="V">V — 比容 (m³/kg)</option>
+                    <option value="T">T — 干球温度 (℃)</option>
+                    <option value="P">P — 压力 (Pa)</option>
+                </select>
+            </div>
+        </div>
+        <div class="row">
+            <div class="field">
+                <label>已知属性 1</label>
+                <select class="in-key" data-idx="0"></select>
+            </div>
+            <div class="field">
+                <label>值 1</label>
+                <input type="number" step="any" class="in-val" data-idx="0" value="101325">
+            </div>
+            <div class="field">
+                <label>已知属性 2</label>
+                <select class="in-key" data-idx="1"></select>
+            </div>
+            <div class="field">
+                <label>值 2</label>
+                <input type="number" step="any" class="in-val" data-idx="1" value="25">
+            </div>
+            <div class="field">
+                <label>已知属性 3</label>
+                <select class="in-key" data-idx="2"></select>
+            </div>
+            <div class="field">
+                <label>值 3</label>
+                <input type="number" step="any" class="in-val" data-idx="2" value="0.5">
+            </div>
+        </div>
+        <div class="row">
+            <button onclick="callApi()">▶ 发送请求</button>
+        </div>
+        <div class="request-url" id="reqUrl">GET /haprops?...</div>
+        <div class="result" id="result">（结果将显示在这里）</div>
+    </div>
+
+    <h2>三、GET 调用方式</h2>
+    <p>调用格式非常直观：<strong>需要的物性作为 <code>out_prop</code>，已知的三个状态参数直接作为 URL 查询参数</strong>（参数名即 CoolProp 属性代码）。</p>
+
+    <div class="tip">
+        <strong>💡 单位约定 (已自动换算)</strong>
+        <ul style="margin:6px 0;">
+            <li>温度 (<code>T</code>, <code>Twb</code>, <code>Tdp</code>) 输入输出均为 <strong>℃</strong></li>
+            <li>焓值 (<code>H</code>, <code>Hda</code>) 输入输出均为 <strong>kJ/kg 绝干气</strong></li>
+            <li>压力 <code>P</code> 单位为 <strong>Pa</strong></li>
+            <li>相对湿度 <code>R</code> 取值范围 <strong>0 ~ 1</strong></li>
+            <li>含湿量 <code>W</code> 单位为 <strong>kg 水蒸气 / kg 绝干气</strong></li>
+        </ul>
+    </div>
+
+    <h3>示例 1：已知干球温度 + 相对湿度，求焓值</h3>
     <pre><code>GET /haprops?out_prop=H&P=101325&T=25&R=0.5</code></pre>
-
-    <h3>响应示例</h3>
     <pre><code>{
   "requested_property": "H",
-  "inputs": {
-    "P": 101325.0,
-    "T": 25.0,
-    "R": 0.5
-  },
-  "value": 50.41,
+  "inputs": { "P": 101325, "T": 25, "R": 0.5 },
+  "value": 50.42,
   "status": "success"
 }</code></pre>
 
-    <h2>湿空气属性代码参考</h2>
-    <ul>
-        <li><code>T</code> : 干球温度 (℃)</li>
-        <li><code>Twb</code> : 湿球温度 (℃)</li>
-        <li><code>Tdp</code> : 露点温度 (℃)</li>
-        <li><code>P</code> : 压力 (Pa)</li>
-        <li><code>H</code> : 湿空气比焓 (kJ/kg 绝干气)</li>
-        <li><code>W</code> : 含湿量 (kg 水蒸气 / kg 绝干气)</li>
-        <li><code>R</code> : 相对湿度 (0 ~ 1)</li>
-        <li><code>V</code> : 湿空气比容 (m³/kg 绝干气)</li>
-    </ul>
-    <p>更多详情请参考 <a href="http://www.coolprop.org/fluid_properties/HumidAir.html" target="_blank">CoolProp 湿空气文档</a>。</p>
+    <h3>示例 2：已知干球温度 + 湿球温度，求相对湿度</h3>
+    <pre><code>GET /haprops?out_prop=R&P=101325&T=30&Twb=22</code></pre>
 
+    <h3>示例 3：已知焓值 + 含湿量，求干球温度</h3>
+    <pre><code>GET /haprops?out_prop=T&P=101325&H=50&W=0.01</code></pre>
+
+    <h3>示例 4：求露点温度</h3>
+    <pre><code>GET /haprops?out_prop=Tdp&P=101325&T=30&R=0.6</code></pre>
+
+    <h2>四、POST 批量调用 (焓湿图绘制)</h2>
+    <p>对于绘制焓湿图，通常需要计算大量等值线上的点。使用批量接口可以一次性获得结果。</p>
+
+    <pre><code>POST /haprops/batch
+Content-Type: application/json
+
+{
+  "out_prop": "W",
+  "points": [
+    { "inputs": { "P": 101325, "T": 20, "R": 0.5 } },
+    { "inputs": { "P": 101325, "T": 25, "R": 0.5 } },
+    { "inputs": { "P": 101325, "T": 30, "R": 0.5 } }
+  ]
+}</code></pre>
+
+    <p><strong>curl 示例：</strong></p>
+    <pre><code>curl -X POST https://coolpropapi.zeabur.app/haprops/batch \
+  -H "Content-Type: application/json" \
+  -d '{"out_prop":"W","points":[{"inputs":{"P":101325,"T":25,"R":0.5}}]}'</code></pre>
+
+    <h2>五、属性代码对照表</h2>
+    <table>
+        <thead>
+            <tr><th>代码</th><th>含义</th><th>单位</th><th>类别</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><code>P</code></td><td>压力</td><td>Pa</td><td>输入/输出</td></tr>
+            <tr><td><code>T</code> / <code>Tdb</code></td><td>干球温度</td><td>℃</td><td>输入/输出</td></tr>
+            <tr><td><code>Twb</code> / <code>B</code></td><td>湿球温度</td><td>℃</td><td>输入/输出</td></tr>
+            <tr><td><code>Tdp</code> / <code>D</code></td><td>露点温度</td><td>℃</td><td>输入/输出</td></tr>
+            <tr><td><code>R</code></td><td>相对湿度</td><td>0 ~ 1</td><td>输入/输出</td></tr>
+            <tr><td><code>W</code></td><td>含湿量</td><td>kg/kg 绝干气</td><td>输入/输出</td></tr>
+            <tr><td><code>H</code> / <code>Hda</code></td><td>湿空气比焓</td><td>kJ/kg 绝干气</td><td>输入/输出</td></tr>
+            <tr><td><code>V</code> / <code>Vda</code></td><td>比容</td><td>m³/kg 绝干气</td><td>输入/输出</td></tr>
+            <tr><td><code>S</code> / <code>Sda</code></td><td>比熵</td><td>J/(kg·K)</td><td>输入/输出</td></tr>
+            <tr><td><code>Y</code> / <code>psi_w</code></td><td>水蒸气摩尔分数</td><td>mol/mol</td><td>输入/输出</td></tr>
+        </tbody>
+    </table>
+
+    <h2>六、错误响应</h2>
+    <pre><code>// 属性代码非法
+HTTP 400
+{ "detail": "存在无效的属性代码: ['XYZ']。有效代码见 /haprops/keys" }
+
+// 参数个数错误
+HTTP 400
+{ "detail": "需要且仅需 3 个已知状态参数，当前提供了 2 个" }</code></pre>
+
+    <p style="margin-top:40px; color:#718096; font-size:0.88em; text-align:center;">
+        数据源: <a href="http://www.coolprop.org/fluid_properties/HumidAir.html" target="_blank">CoolProp 湿空气文档</a>
+    </p>
+
+    <script>
+    const INPUT_KEYS = [
+        ["P",   "P  — 压力 (Pa)"],
+        ["T",   "T  — 干球温度 (℃)"],
+        ["Twb", "Twb — 湿球温度 (℃)"],
+        ["Tdp", "Tdp — 露点温度 (℃)"],
+        ["R",   "R  — 相对湿度 (0-1)"],
+        ["W",   "W  — 含湿量 (kg/kg)"],
+        ["H",   "H  — 比焓 (kJ/kg)"],
+        ["V",   "V  — 比容 (m³/kg)"],
+    ];
+    const defaults = ["P", "T", "R"];
+    document.querySelectorAll(".in-key").forEach((sel, i) => {
+        INPUT_KEYS.forEach(([k, label]) => {
+            const opt = document.createElement("option");
+            opt.value = k; opt.textContent = label;
+            if (k === defaults[i]) opt.selected = true;
+            sel.appendChild(opt);
+        });
+        sel.addEventListener("change", updateUrl);
+    });
+    document.querySelectorAll(".in-val, #out_prop").forEach(el => el.addEventListener("input", updateUrl));
+
+    function buildUrl() {
+        const out = document.getElementById("out_prop").value;
+        const keys = Array.from(document.querySelectorAll(".in-key")).map(e => e.value);
+        const vals = Array.from(document.querySelectorAll(".in-val")).map(e => e.value);
+        const qs = [`out_prop=${encodeURIComponent(out)}`];
+        for (let i = 0; i < 3; i++) qs.push(`${keys[i]}=${encodeURIComponent(vals[i])}`);
+        return `/haprops?${qs.join("&")}`;
+    }
+    function updateUrl() {
+        document.getElementById("reqUrl").textContent = "GET " + buildUrl();
+    }
+    async function callApi() {
+        const url = buildUrl();
+        const box = document.getElementById("result");
+        box.textContent = "请求中...";
+        try {
+            const resp = await fetch(url);
+            const data = await resp.json();
+            box.textContent = JSON.stringify(data, null, 2);
+            box.style.color = resp.ok ? "#68d391" : "#fc8181";
+        } catch (e) {
+            box.textContent = "请求失败: " + e.message;
+            box.style.color = "#fc8181";
+        }
+    }
+    updateUrl();
+    </script>
 </body>
 </html>
