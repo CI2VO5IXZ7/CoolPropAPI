@@ -1,0 +1,13 @@
+# 忽略 Python 缓存和虚拟环境
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# 忽略 IDE 和系统文件
+.idea/
+.vscode/
+*.swp
+.DS_Store
