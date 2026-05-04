@@ -1,0 +1,118 @@
+name: Build & Publish
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  smoke-test:
+    name: Smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Start service
+        run: |
+          nohup uvicorn main:app --host 127.0.0.1 --port 8080 > server.log 2>&1 &
+          echo $! > server.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then
+              echo "Service up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Service failed to start" >&2
+          cat server.log
+          exit 1
+
+      - name: GET /health
+        run: |
+          curl -fsS http://127.0.0.1:8080/health | tee /tmp/health.json
+          grep -q '"status":"ok"' /tmp/health.json
+
+      - name: GET /ha?T=25&R=0.5
+        run: |
+          curl -fsS "http://127.0.0.1:8080/ha?T=25&R=0.5" | tee /tmp/ha.json
+          python -c "
+          import json, sys
+          d = json.load(open('/tmp/ha.json'))
+          assert d['pressure']['default'] is True, d
+          assert d['pressure']['P'] == 101325, d
+          for k in ('T','Twb','Tdp','R','W','H','V','S','Y'):
+              assert k in d['state'], (k, d)
+          assert abs(d['state']['T'] - 25.0) < 1e-6, d
+          assert 49 < d['state']['H'] < 52, d
+          print('ok')
+          "
+
+      - name: Stop service
+        if: always()
+        run: |
+          if [ -f server.pid ]; then kill "$(cat server.pid)" 2>/dev/null || true; fi
+          [ -f server.log ] && tail -n 50 server.log || true
+
+  docker:
+    name: Build & push image
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

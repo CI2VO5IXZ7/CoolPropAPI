@@ -1,26 +1,33 @@
-# 湿空气物性计算 API (CoolPropAPI)
+# CoolPropAPI
 
-基于 **FastAPI** + **CoolProp** 构建的湿空气物性计算 HTTP 服务，专为焓湿图 (h-d chart) 计算场景设计。
+基于 **FastAPI** + **CoolProp** 的湿空气物性计算 HTTP 服务。给定任意 **2 个状态参数**，一次返回该状态点的全部湿空气物性，由调用方按需取用。压力 `P` 缺省 `101325 Pa`（标准大气压），可显式覆盖。
 
-## 特性
+完整使用文档直接访问服务主页 `/` 即可（无需 `/docs`）。
 
-- ✅ 直观的调用方式，属性代码即查询参数名，例如 `?out_prop=H&P=101325&T=25&R=0.5`
-- ✅ 工程常用单位自动换算：温度 **℃**、焓值 **kJ/kg**、相对湿度 0-1
-- ✅ 支持批量计算接口，便于绘制焓湿图等场景
-- ✅ 提供可交互的在线 Playground 页面
-- ✅ 启用 CORS，可在前端页面直接调用
-- ✅ 一键部署到 Zeabur
-
-## 接口一览
+## 接口
 
 | 方法 | 路径 | 说明 |
 |:---:|:---|:---|
-| GET  | `/`              | 中文使用说明主页 + 在线试用 |
-| GET  | `/haprops`       | 单点湿空气物性计算 |
-| POST | `/haprops/batch` | 批量计算（JSON Body） |
-| GET  | `/haprops/keys`  | 查询支持的属性代码 |
-| GET  | `/docs`, `/redoc`| Swagger / ReDoc 文档 |
-| GET  | `/health`        | 健康检查 |
+| GET  | `/`         | 使用文档主页 |
+| GET  | `/ha`       | 单点全量物性计算 |
+| POST | `/ha/batch` | 批量全量物性计算 |
+| GET  | `/ha/keys`  | 支持的属性代码与单位 |
+| GET  | `/health`   | 健康检查 |
+
+## 快速调用
+
+```bash
+# 标准大气，25 ℃，50% 相对湿度，全量物性
+curl "https://your-host/ha?T=25&R=0.5"
+
+# 高原非标压
+curl "https://your-host/ha?T=25&R=0.5&P=80000"
+
+# 批量
+curl -X POST https://your-host/ha/batch \
+  -H "Content-Type: application/json" \
+  -d '{"points":[{"T":25,"R":0.5},{"T":30,"R":0.6}]}'
+```
 
 ## 本地运行
 
@@ -30,29 +37,27 @@ python3 -m venv venv
 ./venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080
 ```
 
-浏览器访问 <http://localhost:8080> 查看文档。
+访问 <http://localhost:8080> 查看文档。
 
-## 部署到 Zeabur
+## Docker 部署
 
-1. Fork 或导入本仓库到您的 GitHub 账号。
-2. 登录 [Zeabur](https://zeabur.com/)，新建项目 → 部署 GitHub 仓库。
-3. Zeabur 会自动读取 `zeabur.json` 与 `requirements.txt` 完成构建和启动。
-
-## 调用示例
+CI 自动构建并推送至 GHCR：
 
 ```bash
-# 大气压 25℃ 相对湿度 50% 的湿空气比焓
-curl "https://coolpropapi.zeabur.app/haprops?out_prop=H&P=101325&T=25&R=0.5"
-
-# 批量计算
-curl -X POST https://coolpropapi.zeabur.app/haprops/batch \
-  -H "Content-Type: application/json" \
-  -d '{"out_prop":"W","points":[{"inputs":{"P":101325,"T":25,"R":0.5}}]}'
+docker run -d --name coolpropapi -p 8080:8080 \
+  ghcr.io/ci2vo5ixz7/coolpropapi:latest
 ```
 
-## 属性代码与单位
+本地构建：
 
-详见 [`/haprops/keys`](https://coolpropapi.zeabur.app/haprops/keys) 或主页表格。
+```bash
+docker build -t coolpropapi:dev .
+docker run --rm -p 8080:8080 coolpropapi:dev
+```
+
+## Zeabur 部署
+
+仓库根目录已含 `zeabur.json`。在 Zeabur 中导入本仓库即可一键部署。
 
 ## 许可证
 

@@ -1,23 +1,34 @@
-import math
-from typing import List, Dict, Any
+"""湿空气物性计算 API.
 
-from fastapi import FastAPI, HTTPException, Query, Request
+调用约定：
+- GET  /ha?<key1>=<v1>&<key2>=<v2>[&P=<Pa>]    任意 2 个状态参数 → 返回全部物性
+- POST /ha/batch                                 批量计算
+- GET  /ha/keys                                  支持的属性代码与单位说明
+- GET  /health                                   健康检查
+- GET  /                                         使用文档主页
+
+P 默认 101325 Pa，可显式覆盖。温度统一 ℃，焓统一 kJ/(kg 干空气)。
+"""
+
+import math
+from typing import Any, Dict, List, Optional
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import CoolProp.CoolProp as CP
 
 app = FastAPI(
     title="湿空气物性计算 API",
-    description="基于 Python FastAPI 和 CoolProp 的湿空气物性计算服务，专为焓湿图计算设计。",
-    version="1.1.0",
+    description="基于 FastAPI + CoolProp。给定任意 2 个状态参数，返回该状态点的全部湿空气物性。",
+    version="2.0.0",
     docs_url=None,
     redoc_url=None,
+    openapi_url=None,
 )
 
-# 允许跨域，方便前端绘图调用
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,31 +38,45 @@ app.add_middleware(
 
 templates = Jinja2Templates(directory="templates")
 
-# --- 单位与属性元数据 ---
+# --- 常量 ---
 
-# 湿空气计算中温度类的属性代码 (摄氏度 ↔ 开尔文)
-TEMP_KEYS = {"T", "Tdb", "B", "Twb", "D", "Tdp"}
-# 焓类属性代码 (kJ/kg ↔ J/kg)
-ENTHALPY_KEYS = {"H", "Hda", "Hha"}
+DEFAULT_PRESSURE_PA = 101325.0
 
-# 接口接受的所有有效已知状态参数代码（用于参数白名单校验）
-VALID_INPUT_KEYS = {
-    "P",     # 压力 (Pa)
-    "T", "Tdb",   # 干球温度 (℃)
-    "B", "Twb",   # 湿球温度 (℃)
-    "D", "Tdp",   # 露点温度 (℃)
-    "R",     # 相对湿度 (0 ~ 1)
-    "W",     # 含湿量 (kg/kg 绝干气)
-    "H", "Hda",   # 比焓 (kJ/kg 绝干气)
-    "V", "Vda",   # 比容 (m^3/kg 绝干气)
-    "S", "Sda",   # 比熵 (J/kg/K, 不做单位转换)
-    "psi_w",  # 水蒸气摩尔分数
-    "Y",      # 水蒸气摩尔分数
+# 接受的状态参数代码（不含 P 与 out_prop）
+STATE_KEYS = {
+    "T", "Tdb",      # 干球温度 ℃
+    "B", "Twb",      # 湿球温度 ℃
+    "D", "Tdp",      # 露点温度 ℃
+    "R",             # 相对湿度 0~1
+    "W",             # 含湿量 kg/kg 干空气
+    "H", "Hda",      # 比焓 kJ/kg 干空气
+    "V", "Vda",      # 比容 m^3/kg 干空气
+    "S", "Sda",      # 比熵 J/(kg·K)
+    "Y", "psi_w",    # 水蒸气摩尔分数
 }
 
+ALL_INPUT_KEYS = STATE_KEYS | {"P"}
 
-def convert_input(prop: str, val: float) -> float:
-    """将用户提供的 ℃ / kJ·kg⁻¹ 输入转换为 CoolProp 需要的 SI 单位。"""
+TEMP_KEYS = {"T", "Tdb", "B", "Twb", "D", "Tdp"}
+ENTHALPY_KEYS = {"H", "Hda", "Hha"}
+
+# 输出全量状态时实际计算的字段（CoolProp 代码 → 单位描述）
+OUTPUT_FIELDS = [
+    ("T",   "℃"),
+    ("Twb", "℃"),
+    ("Tdp", "℃"),
+    ("R",   "0~1"),
+    ("W",   "kg/kg 干空气"),
+    ("H",   "kJ/kg 干空气"),
+    ("V",   "m^3/kg 干空气"),
+    ("S",   "J/(kg·K)"),
+    ("Y",   "mol/mol"),
+]
+
+
+# --- 单位换算 ---
+
+def _to_si(prop: str, val: float) -> float:
     if prop in TEMP_KEYS:
         return val + 273.15
     if prop in ENTHALPY_KEYS:
@@ -59,8 +84,7 @@ def convert_input(prop: str, val: float) -> float:
     return val
 
 
-def convert_output(prop: str, val: float) -> float:
-    """将 CoolProp 输出的 SI 单位转回 ℃ / kJ·kg⁻¹。"""
+def _from_si(prop: str, val: float) -> float:
     if prop in TEMP_KEYS:
         return val - 273.15
     if prop in ENTHALPY_KEYS:
@@ -69,157 +93,138 @@ def convert_output(prop: str, val: float) -> float:
 
 
 def _clean_error(err: Exception) -> str:
-    """裁剪 CoolProp 异常信息（通常包含堆栈换行），只保留首行。"""
     return str(err).split("\n")[0][:300]
 
 
-def _compute_one(out_prop: str, inputs: Dict[str, float]) -> float:
-    """核心计算逻辑：接受输入字典（用户单位），返回用户单位的输出值。"""
-    if len(inputs) != 3:
-        raise ValueError(f"需要且仅需 3 个已知状态参数，当前提供了 {len(inputs)} 个")
+# --- 核心计算 ---
 
-    # 校验 key 合法性
-    invalid = [k for k in inputs if k not in VALID_INPUT_KEYS]
+def _compute_full_state(state_inputs: Dict[str, float], pressure: float) -> Dict[str, Optional[float]]:
+    """给定 2 个状态参数 + 压力，返回完整状态字典。
+
+    单个字段计算失败时返回 None，不阻断整体。
+    """
+    args: List[Any] = ["P", pressure]
+    for k, v in state_inputs.items():
+        args.extend([k, _to_si(k, float(v))])
+
+    state: Dict[str, Optional[float]] = {}
+    for prop, _unit in OUTPUT_FIELDS:
+        try:
+            si_val = CP.HAPropsSI(prop, *args)
+            if isinstance(si_val, float) and not math.isfinite(si_val):
+                state[prop] = None
+            else:
+                state[prop] = _from_si(prop, si_val)
+        except Exception:
+            state[prop] = None
+    return state
+
+
+def _validate_and_split(raw: Dict[str, str]) -> (Dict[str, float], float, bool):
+    """从查询参数中分离状态参数与压力，返回 (state_inputs, pressure, p_is_default)。"""
+    invalid = [k for k in raw if k not in ALL_INPUT_KEYS]
     if invalid:
-        raise ValueError(
-            f"存在无效的属性代码: {invalid}。有效代码见 /haprops/keys"
+        raise HTTPException(
+            status_code=400,
+            detail=f"存在无效的属性代码: {invalid}。有效代码见 /ha/keys",
         )
 
-    # 校验数值有效性
-    for k, v in inputs.items():
-        if not isinstance(v, (int, float)) or not math.isfinite(float(v)):
-            raise ValueError(f"属性 {k} 的数值无效: {v}")
+    parsed: Dict[str, float] = {}
+    for k, v in raw.items():
+        try:
+            parsed[k] = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"参数 {k} 的值 '{v}' 不是有效的数字")
+        if not math.isfinite(parsed[k]):
+            raise HTTPException(status_code=400, detail=f"参数 {k} 的数值无效: {v}")
 
-    # 单位转换并构建 CoolProp 调用参数
-    args = []
-    for k, v in inputs.items():
-        args.extend([k, convert_input(k, float(v))])
+    if "P" in parsed:
+        pressure = parsed.pop("P")
+        p_is_default = False
+    else:
+        pressure = DEFAULT_PRESSURE_PA
+        p_is_default = True
 
-    result_si = CP.HAPropsSI(out_prop, *args)
-    return convert_output(out_prop, result_si)
+    if len(parsed) != 2:
+        raise HTTPException(
+            status_code=400,
+            detail=f"需要且仅需 2 个状态参数（除 P 之外），当前提供了 {len(parsed)} 个",
+        )
 
-
-# --- 自定义文档页面 CDN (解决默认 jsdelivr 在某些网络环境下不稳定) ---
-
-@app.get("/docs", include_in_schema=False)
-async def custom_swagger_ui_html():
-    return get_swagger_ui_html(
-        openapi_url=app.openapi_url,
-        title=app.title + " - Swagger UI",
-        oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
-        swagger_js_url="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.9.0/swagger-ui-bundle.js",
-        swagger_css_url="https://cdnjs.cloudflare.com/ajax/libs/swagger-ui/5.9.0/swagger-ui.css",
-    )
+    return parsed, pressure, p_is_default
 
 
-@app.get("/redoc", include_in_schema=False)
-async def redoc_html():
-    return get_redoc_html(
-        openapi_url=app.openapi_url,
-        title=app.title + " - ReDoc",
-        redoc_js_url="https://cdnjs.cloudflare.com/ajax/libs/redoc/2.0.0-rc.77/redoc.standalone.js",
-    )
-
-
-# --- 业务接口 ---
+# --- 路由 ---
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+async def home(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "index.html")
 
 
-@app.get(
-    "/haprops",
-    summary="计算单点湿空气物性",
-    description="根据 3 个已知状态参数计算湿空气的目标物性。参数名直接使用属性代码，例如 ?out_prop=H&P=101325&T=25&R=0.5",
-    tags=["HumidAir"],
-)
-async def calculate_humid_air_properties(
-    request: Request,
-    out_prop: str = Query(..., description="输出属性代码，例如 H (焓)、W (含湿量)、Twb (湿球温度)"),
-):
-    query_params = dict(request.query_params)
-    query_params.pop("out_prop", None)
-
-    inputs: Dict[str, float] = {}
-    for key, value in query_params.items():
-        try:
-            inputs[key] = float(value)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"参数 {key} 的值 '{value}' 不是有效的数字",
-            )
+@app.get("/ha", summary="计算湿空气全量状态", tags=["HumidAir"])
+async def humid_air_state(request: Request) -> Dict[str, Any]:
+    raw = dict(request.query_params)
+    state_inputs, pressure, p_is_default = _validate_and_split(raw)
 
     try:
-        value = _compute_one(out_prop, inputs)
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=_clean_error(ve))
+        state = _compute_full_state(state_inputs, pressure)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"计算错误: {_clean_error(e)}")
 
     return {
-        "requested_property": out_prop,
-        "inputs": inputs,
-        "value": value,
-        "status": "success",
+        "inputs": state_inputs,
+        "pressure": {"P": pressure, "default": p_is_default},
+        "state": state,
     }
 
 
-class BatchPoint(BaseModel):
-    """一个湿空气状态点所需的输入。"""
-    inputs: Dict[str, float] = Field(
-        ..., description="3 个已知状态属性及其数值，例如 {\"P\": 101325, \"T\": 25, \"R\": 0.5}"
+class BatchRequest(BaseModel):
+    points: List[Dict[str, float]] = Field(
+        ...,
+        description="状态点列表。每个点是一个 {属性代码: 数值} 字典；需含 2 个状态参数，可选含 P。",
     )
 
 
-class BatchRequest(BaseModel):
-    out_prop: str = Field(..., description="输出属性代码，例如 H")
-    points: List[BatchPoint] = Field(..., description="多个状态点的输入列表")
-
-
-@app.post(
-    "/haprops/batch",
-    summary="批量计算湿空气物性",
-    description="一次传入多个状态点，便于绘制焓湿图等批量计算场景。",
-    tags=["HumidAir"],
-)
-async def calculate_batch(req: BatchRequest) -> Dict[str, Any]:
-    results = []
+@app.post("/ha/batch", summary="批量计算湿空气全量状态", tags=["HumidAir"])
+async def humid_air_batch(req: BatchRequest) -> Dict[str, Any]:
+    results: List[Dict[str, Any]] = []
     for idx, point in enumerate(req.points):
         try:
-            value = _compute_one(req.out_prop, point.inputs)
-            results.append({"index": idx, "inputs": point.inputs, "value": value, "status": "success"})
-        except Exception as e:
+            raw = {k: str(v) for k, v in point.items()}
+            state_inputs, pressure, p_is_default = _validate_and_split(raw)
+            state = _compute_full_state(state_inputs, pressure)
             results.append({
                 "index": idx,
-                "inputs": point.inputs,
-                "error": _clean_error(e),
-                "status": "error",
+                "inputs": state_inputs,
+                "pressure": {"P": pressure, "default": p_is_default},
+                "state": state,
+                "status": "success",
             })
-    return {"requested_property": req.out_prop, "count": len(results), "results": results}
+        except HTTPException as he:
+            results.append({"index": idx, "inputs": point, "error": he.detail, "status": "error"})
+        except Exception as e:
+            results.append({"index": idx, "inputs": point, "error": _clean_error(e), "status": "error"})
+
+    return {"count": len(results), "results": results}
 
 
-@app.get(
-    "/haprops/keys",
-    summary="查询所有受支持的属性代码及单位",
-    tags=["HumidAir"],
-)
-async def list_keys():
+@app.get("/ha/keys", summary="查询所有受支持的属性代码与单位", tags=["HumidAir"])
+async def list_keys() -> Dict[str, Any]:
     return {
-        "input_keys": sorted(VALID_INPUT_KEYS),
-        "temperature_keys_celsius": sorted(TEMP_KEYS),
-        "enthalpy_keys_kj_per_kg": sorted(ENTHALPY_KEYS),
+        "state_keys": sorted(STATE_KEYS),
+        "pressure_key": "P",
+        "default_pressure_pa": DEFAULT_PRESSURE_PA,
+        "output_fields": [{"key": k, "unit": u} for k, u in OUTPUT_FIELDS],
         "notes": [
-            "温度类属性 (T/Tdb/B/Twb/D/Tdp) 输入和输出单位均为 ℃",
-            "焓类属性 (H/Hda/Hha) 输入和输出单位均为 kJ/kg 绝干气",
-            "压力 P 单位为 Pa",
-            "相对湿度 R 取值范围 0 ~ 1",
-            "含湿量 W 单位为 kg 水蒸气 / kg 绝干气",
+            "调用 /ha 时传入恰好 2 个状态参数；P 缺省 101325 Pa，可显式覆盖。",
+            "温度类（T/Tdb/B/Twb/D/Tdp）输入输出单位为 ℃。",
+            "焓类（H/Hda）输入输出单位为 kJ/kg 干空气。",
+            "压力 P 单位为 Pa；相对湿度 R 取值 0~1（小数，非百分数）。",
+            "含湿量 W 单位为 kg 水蒸气 / kg 干空气。",
         ],
     }
 
 
 @app.get("/health", summary="健康检查", tags=["System"])
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     return {"status": "ok", "service": "CoolProp API", "version": app.version}
