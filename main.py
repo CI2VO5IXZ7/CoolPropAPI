@@ -4,6 +4,7 @@
 - GET  /ha?<key1>=<v1>&<key2>=<v2>[&P=<Pa>]    任意 2 个状态参数 → 返回全部物性
 - POST /ha/batch                                 批量计算
 - GET  /ha/keys                                  支持的属性代码与单位说明
+- GET  /chart/hd                                 国标样式 h-d 焓湿图（PNG/SVG）
 - GET  /health                                   健康检查
 - GET  /                                         使用文档主页
 
@@ -11,14 +12,18 @@ P 默认 101325 Pa，可显式覆盖。温度统一 ℃，焓统一 kJ/(kg 干�
 输入越界、同义参数冲突、batch 超过 500 点均返回 400；默认每 IP 每分钟 60 次请求。
 """
 
+import logging
 import math
-from typing import Any, Dict, List, Optional, Tuple
+import os
+import threading
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from slowapi import Limiter
@@ -27,6 +32,26 @@ from slowapi.middleware import SlowAPIASGIMiddleware
 from slowapi.util import get_remote_address
 import CoolProp.CoolProp as CP
 
+import chart
+
+logger = logging.getLogger("coolpropapi")
+
+
+def _prewarm_chart() -> None:
+    try:
+        params = chart.validate_params(**chart.DEFAULTS)
+        chart.render_chart(params)
+    except Exception:
+        logger.exception("h-d 图预热失败")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    if os.environ.get("CHART_PREWARM", "1") == "1":
+        threading.Thread(target=_prewarm_chart, name="chart-prewarm", daemon=True).start()
+    yield
+
+
 app = FastAPI(
     title="湿空气物性计算 API",
     description="基于 FastAPI + CoolProp。给定任意 2 个状态参数，返回该状态点的全部湿空气物性。",
@@ -34,9 +59,11 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
+    lifespan=lifespan,
 )
 
 DEFAULT_RATE_LIMIT = "60/minute"
+CHART_RATE_LIMIT = "10/minute"
 
 
 def _client_ip(request: Request) -> str:
@@ -318,6 +345,37 @@ async def list_keys() -> Dict[str, Any]:
             "含湿量 W 单位为 kg 水蒸气 / kg 干空气。",
         ],
     }
+
+
+@app.get("/chart/hd", summary="国标样式 h-d 焓湿图", tags=["Chart"])
+@limiter.limit(CHART_RATE_LIMIT)
+async def chart_hd(
+    request: Request,
+    p: float = Query(chart.DEFAULTS["p"], description="总压 Pa，50000–110000"),
+    t_min: float = Query(chart.DEFAULTS["t_min"], description="温度下限 ℃，≥ -30"),
+    t_max: float = Query(chart.DEFAULTS["t_max"], description="温度上限 ℃，≤ 60，跨度 ≥ 10"),
+    d_max: float = Query(chart.DEFAULTS["d_max"], description="含湿量上限 g/kg，5–60"),
+    fmt: str = Query(chart.DEFAULTS["fmt"], description="png | svg"),
+    width: int = Query(chart.DEFAULTS["width"], description="PNG 宽度 px，600–2400"),
+    points: Optional[str] = Query(None, description="状态点 'T,R;T,R'（℃, 0~1），最多 10 个"),
+    lang: str = Query(chart.DEFAULTS["lang"], description="zh | en"),
+) -> Response:
+    try:
+        params = chart.validate_params(p, t_min, t_max, d_max, fmt, width, lang)
+        pts = await run_in_threadpool(chart.parse_points, points, params)
+    except chart.ChartParamError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        content, used = await run_in_threadpool(chart.render_chart, params, pts)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"绘图错误: {_clean_error(e)}")
+
+    return Response(
+        content=content,
+        media_type=chart.media_type(used.fmt),
+        headers={"Cache-Control": "public, max-age=86400", "Content-Language": used.lang},
+    )
 
 
 @app.get("/health", summary="健康检查", tags=["System"])
