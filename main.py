@@ -4,21 +4,53 @@
 - GET  /ha?<key1>=<v1>&<key2>=<v2>[&P=<Pa>]    任意 2 个状态参数 → 返回全部物性
 - POST /ha/batch                                 批量计算
 - GET  /ha/keys                                  支持的属性代码与单位说明
+- GET  /chart/hd                                 国标样式 h-d 焓湿图（PNG/SVG）
 - GET  /health                                   健康检查
 - GET  /                                         使用文档主页
 
 P 默认 101325 Pa，可显式覆盖。温度统一 ℃，焓统一 kJ/(kg 干空气)。
+输入越界、同义参数冲突、batch 超过 500 点均返回 400；默认每 IP 每分钟 60 次请求。
 """
 
+import logging
 import math
-from typing import Any, Dict, List, Optional
+import os
+import threading
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIASGIMiddleware
+from slowapi.util import get_remote_address
 import CoolProp.CoolProp as CP
+
+import chart
+
+logger = logging.getLogger("coolpropapi")
+
+
+def _prewarm_chart() -> None:
+    try:
+        params = chart.validate_params(**chart.DEFAULTS)
+        chart.render_chart(params)
+    except Exception:
+        logger.exception("h-d 图预热失败")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    if os.environ.get("CHART_PREWARM", "1") == "1":
+        threading.Thread(target=_prewarm_chart, name="chart-prewarm", daemon=True).start()
+    yield
+
 
 app = FastAPI(
     title="湿空气物性计算 API",
@@ -27,14 +59,53 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
+    lifespan=lifespan,
 )
 
+DEFAULT_RATE_LIMIT = "60/minute"
+CHART_RATE_LIMIT = "10/minute"
+
+
+def _client_ip(request: Request) -> str:
+    # 部署在反向代理（Zeabur）之后时，直连地址是代理，需取 X-Forwarded-For 首个地址
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_client_ip, application_limits=[DEFAULT_RATE_LIMIT], storage_uri="memory://")
+app.state.limiter = limiter
+
+app.add_middleware(SlowAPIASGIMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={"detail": f"请求过于频繁，请稍后再试（限制：{exc.detail}/IP）"},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    errors = exc.errors()
+    if errors:
+        first = errors[0]
+        loc = ".".join(str(x) for x in first.get("loc", ()) if x != "body") or "请求"
+        msg = f"请求参数格式错误: {loc} {first.get('msg', '')}".strip()
+    else:
+        msg = "请求参数格式错误"
+    return JSONResponse(status_code=400, content={"detail": msg[:300]})
 
 templates = Jinja2Templates(directory="templates")
 
@@ -59,6 +130,31 @@ ALL_INPUT_KEYS = STATE_KEYS | {"P"}
 
 TEMP_KEYS = {"T", "Tdb", "B", "Twb", "D", "Tdp"}
 ENTHALPY_KEYS = {"H", "Hda", "Hha"}
+
+MAX_BATCH_POINTS = 500
+
+# 同义参数组：同组内只能提供一个
+SYNONYM_GROUPS = [
+    ("T", "Tdb"),
+    ("B", "Twb"),
+    ("D", "Tdp"),
+    ("H", "Hda"),
+    ("V", "Vda"),
+    ("S", "Sda"),
+    ("Y", "psi_w"),
+]
+
+# 输入范围（含端点）：代码 → (下限, 上限, 单位)
+P_RANGE = (50000.0, 110000.0, "Pa")
+TEMP_RANGE = (-100.0, 200.0, "℃")
+INPUT_RANGES: Dict[str, Tuple[float, float, str]] = {
+    "P": P_RANGE,
+    **{k: TEMP_RANGE for k in TEMP_KEYS},
+    "R": (0.0, 1.0, ""),
+    "W": (0.0, 0.1, "kg/kg 干空气"),
+    "H": (-100.0, 500.0, "kJ/kg 干空气"),
+    "Hda": (-100.0, 500.0, "kJ/kg 干空气"),
+}
 
 # 输出全量状态时实际计算的字段（CoolProp 代码 → 单位描述）
 OUTPUT_FIELDS = [
@@ -120,7 +216,19 @@ def _compute_full_state(state_inputs: Dict[str, float], pressure: float) -> Dict
     return state
 
 
-def _validate_and_split(raw: Dict[str, str]) -> (Dict[str, float], float, bool):
+def _check_range(key: str, val: float) -> None:
+    rng = INPUT_RANGES.get(key)
+    if rng is None:
+        return
+    lo, hi, unit = rng
+    if not lo <= val <= hi:
+        raise HTTPException(
+            status_code=400,
+            detail=f"参数 {key} 的值 {val:g} 超出允许范围 [{lo:g}, {hi:g}] {unit}".rstrip(),
+        )
+
+
+def _validate_and_split(raw: Dict[str, str]) -> Tuple[Dict[str, float], float, bool]:
     """从查询参数中分离状态参数与压力，返回 (state_inputs, pressure, p_is_default)。"""
     invalid = [k for k in raw if k not in ALL_INPUT_KEYS]
     if invalid:
@@ -137,6 +245,11 @@ def _validate_and_split(raw: Dict[str, str]) -> (Dict[str, float], float, bool):
             raise HTTPException(status_code=400, detail=f"参数 {k} 的值 '{v}' 不是有效的数字")
         if not math.isfinite(parsed[k]):
             raise HTTPException(status_code=400, detail=f"参数 {k} 的数值无效: {v}")
+        _check_range(k, parsed[k])
+
+    for a, b in SYNONYM_GROUPS:
+        if a in parsed and b in parsed:
+            raise HTTPException(status_code=400, detail=f"参数 {a} 与 {b} 为同义参数，不能同时提供")
 
     if "P" in parsed:
         pressure = parsed.pop("P")
@@ -181,14 +294,13 @@ async def humid_air_state(request: Request) -> Dict[str, Any]:
 class BatchRequest(BaseModel):
     points: List[Dict[str, float]] = Field(
         ...,
-        description="状态点列表。每个点是一个 {属性代码: 数值} 字典；需含 2 个状态参数，可选含 P。",
+        description=f"状态点列表（最多 {MAX_BATCH_POINTS} 个）。每个点是一个 {{属性代码: 数值}} 字典；需含 2 个状态参数，可选含 P。",
     )
 
 
-@app.post("/ha/batch", summary="批量计算湿空气全量状态", tags=["HumidAir"])
-async def humid_air_batch(req: BatchRequest) -> Dict[str, Any]:
+def _compute_batch(points: List[Dict[str, float]]) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
-    for idx, point in enumerate(req.points):
+    for idx, point in enumerate(points):
         try:
             raw = {k: str(v) for k, v in point.items()}
             state_inputs, pressure, p_is_default = _validate_and_split(raw)
@@ -204,7 +316,17 @@ async def humid_air_batch(req: BatchRequest) -> Dict[str, Any]:
             results.append({"index": idx, "inputs": point, "error": he.detail, "status": "error"})
         except Exception as e:
             results.append({"index": idx, "inputs": point, "error": _clean_error(e), "status": "error"})
+    return results
 
+
+@app.post("/ha/batch", summary="批量计算湿空气全量状态", tags=["HumidAir"])
+async def humid_air_batch(req: BatchRequest) -> Dict[str, Any]:
+    if len(req.points) > MAX_BATCH_POINTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"批量点数 {len(req.points)} 超过上限 {MAX_BATCH_POINTS}",
+        )
+    results = await run_in_threadpool(_compute_batch, req.points)
     return {"count": len(results), "results": results}
 
 
@@ -225,6 +347,38 @@ async def list_keys() -> Dict[str, Any]:
     }
 
 
+@app.get("/chart/hd", summary="国标样式 h-d 焓湿图", tags=["Chart"])
+@limiter.limit(CHART_RATE_LIMIT)
+async def chart_hd(
+    request: Request,
+    p: float = Query(chart.DEFAULTS["p"], description="总压 Pa，50000–110000"),
+    t_min: float = Query(chart.DEFAULTS["t_min"], description="温度下限 ℃，≥ -30"),
+    t_max: float = Query(chart.DEFAULTS["t_max"], description="温度上限 ℃，≤ 60，跨度 ≥ 10"),
+    d_max: float = Query(chart.DEFAULTS["d_max"], description="含湿量上限 g/kg，5–60"),
+    fmt: str = Query(chart.DEFAULTS["fmt"], description="png | svg"),
+    width: int = Query(chart.DEFAULTS["width"], description="PNG 宽度 px，600–2400"),
+    points: Optional[str] = Query(None, description="状态点 'T,R;T,R'（℃, 0~1），最多 10 个"),
+    lang: str = Query(chart.DEFAULTS["lang"], description="zh | en"),
+) -> Response:
+    try:
+        params = chart.validate_params(p, t_min, t_max, d_max, fmt, width, lang)
+        pts = await run_in_threadpool(chart.parse_points, points, params)
+    except chart.ChartParamError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        content, used = await run_in_threadpool(chart.render_chart, params, pts)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"绘图错误: {_clean_error(e)}")
+
+    return Response(
+        content=content,
+        media_type=chart.media_type(used.fmt),
+        headers={"Cache-Control": "public, max-age=86400", "Content-Language": used.lang},
+    )
+
+
 @app.get("/health", summary="健康检查", tags=["System"])
+@limiter.exempt
 async def health_check() -> Dict[str, Any]:
     return {"status": "ok", "service": "CoolProp API", "version": app.version}

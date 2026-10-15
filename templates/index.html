@@ -71,6 +71,7 @@
         .seg-p    { background: #feebc8; color: #7b341e; }
         .legend { margin-top: 10px; font-family: inherit; font-size: 0.88em; color: #4a5568; }
         .legend span { margin-right: 12px; }
+        .chart-preview { width: 100%; height: auto; border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; }
     </style>
 </head>
 <body>
@@ -81,7 +82,9 @@
     <ol>
         <li>请求方式：<strong>HTTP GET</strong>（单点）或 <strong>POST</strong>（批量），均返回 JSON。</li>
         <li>查询参数名直接使用属性代码（见第三节），值为该属性的数值。</li>
-        <li>必须且只能提供 <strong>2 个状态参数</strong>（多 1 或少 1 → 400）。</li>
+        <li>必须且只能提供 <strong>2 个状态参数</strong>（多 1 或少 1 → 400）；同义代码（如 <code>T</code> 与 <code>Tdb</code>）不能同时出现（→ 400）。</li>
+        <li>输入越界直接返回 400：<code>P</code> 50000 ~ 110000 Pa；温度类 −100 ~ 200 ℃；<code>R</code> 0 ~ 1；<code>W</code> 0 ~ 0.1；<code>H</code> −100 ~ 500 kJ/kg。</li>
+        <li>限流：每个 IP 每分钟合计 60 次（<code>/chart/hd</code> 单独每分钟 10 次），超出返回 429。</li>
         <li>压力 <code>P</code> 是<strong>可选</strong>参数，缺省 <code>101325 Pa</code>（标准大气压）；如需非标压（高原、加压舱等）显式传入即可。</li>
         <li>响应中 <code>state</code> 字段包含该状态点的全部物性，前端自取所需字段。</li>
         <li>温度统一 ℃，焓统一 kJ/(kg 干空气)，相对湿度 0~1（小数）。</li>
@@ -124,13 +127,13 @@
   "pressure": { "P": 101325, "default": true },
   "state": {
     "T":   25.00,
-    "Twb": 17.89,
-    "Tdp": 13.86,
+    "Twb": 17.88,
+    "Tdp": 13.87,
     "R":   0.50,
     "W":   0.00993,
     "H":   50.42,
-    "V":   0.8585,
-    "S":   187.32,
+    "V":   0.8578,
+    "S":   180.76,
     "Y":   0.01571
   }
 }</code></pre>
@@ -155,7 +158,7 @@
             <tr><th>代码</th><th>物理含义</th><th>单位 / 取值</th><th>典型范围</th><th>同义代码</th></tr>
         </thead>
         <tbody>
-            <tr><td><code>P</code></td><td>湿空气总压力（绝压，可选）</td><td>Pa</td><td>缺省 101325</td><td>—</td></tr>
+            <tr><td><code>P</code></td><td>湿空气总压力（绝压，可选）</td><td>Pa</td><td>50000 ~ 110000，缺省 101325</td><td>—</td></tr>
             <tr><td><code>T</code></td><td>干球温度</td><td>℃</td><td>−100 ~ 200</td><td><code>Tdb</code></td></tr>
             <tr><td><code>Twb</code></td><td>湿球温度（绝热饱和温度）</td><td>℃</td><td>≤ <code>T</code></td><td><code>B</code></td></tr>
             <tr><td><code>Tdp</code></td><td>露点温度</td><td>℃</td><td>≤ <code>T</code></td><td><code>D</code></td></tr>
@@ -175,12 +178,12 @@
             <li>温度类一律 ℃，不要传开尔文。</li>
             <li>焓一律 kJ/kg，不要传 J/kg。</li>
             <li>压力 <code>P</code> 单位 Pa，不要传 kPa。</li>
-            <li>状态参数恰好 2 个；冗余组合（如同时给 <code>T</code> 和 <code>Tdb</code>）会被视为 2 个互相冲突的输入，可能导致计算失败。</li>
+            <li>状态参数恰好 2 个；同义代码（如同时给 <code>T</code> 和 <code>Tdb</code>）直接返回 400。</li>
         </ul>
     </div>
 
     <h2>四、批量调用 <code>POST /ha/batch</code></h2>
-    <p>用于一次计算多个状态点（绘焓湿图、批量工况扫描等）。每个点独立解析、独立容错。</p>
+    <p>用于一次计算多个状态点（绘焓湿图、批量工况扫描等）。每个点独立解析、独立容错。单次最多 <strong>500</strong> 个点，超过返回 400。</p>
 
     <h3>请求格式</h3>
     <pre><code>POST /ha/batch
@@ -224,7 +227,32 @@ Content-Type: application/json
   -H "Content-Type: application/json" \
   -d '{"points":[{"T":25,"R":0.5},{"T":30,"R":0.6}]}'</code></pre>
 
-    <h2>五、辅助接口</h2>
+    <h2>五、焓湿图 <code>GET /chart/hd</code></h2>
+    <p>生成国标样式 h-d 焓湿图（斜角坐标：横轴含湿量 d，等温线近水平、等焓线向右下斜交约 135°），可直接在浏览器打开或嵌入报告。所有曲线数值与 <code>/ha</code> 同源（CoolProp）。</p>
+    <table>
+        <thead>
+            <tr><th>参数</th><th>默认</th><th>范围</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><code>p</code></td><td>101325</td><td>50000 ~ 110000 Pa</td><td>总压</td></tr>
+            <tr><td><code>t_min</code> / <code>t_max</code></td><td>−10 / 45</td><td>−30 ≤ t_min &lt; t_max ≤ 60 ℃，跨度 ≥ 10</td><td>温度范围</td></tr>
+            <tr><td><code>d_max</code></td><td>30</td><td>5 ~ 60 g/kg</td><td>横轴上限</td></tr>
+            <tr><td><code>fmt</code></td><td>png</td><td>png | svg</td><td>输出格式</td></tr>
+            <tr><td><code>width</code></td><td>1200</td><td>600 ~ 2400 px</td><td>PNG 宽度，高度按比例</td></tr>
+            <tr><td><code>points</code></td><td>—</td><td>≤ 10 个，<code>T,R;T,R</code>（℃, 0~1）</td><td>在图上标注状态点</td></tr>
+            <tr><td><code>lang</code></td><td>zh</td><td>zh | en</td><td>标签语言；服务器缺中文字体时自动回退 en（响应头 <code>Content-Language</code>）</td></tr>
+        </tbody>
+    </table>
+    <pre><code>GET /chart/hd
+GET /chart/hd?fmt=svg&amp;points=25,0.5;30,0.6
+GET /chart/hd?p=80000&amp;t_min=0&amp;t_max=35&amp;d_max=25&amp;lang=en</code></pre>
+    <p>预览（标注 25 ℃ / 50%，落在 d ≈ 9.93 g/kg、h ≈ 50.4 kJ/kg）：</p>
+    <img class="chart-preview" src="/chart/hd?width=900&amp;points=25,0.5" alt="h-d 焓湿图预览" loading="lazy">
+    <div class="note">
+        越界参数返回 400 JSON <code>{"detail": ...}</code>；响应带 <code>Cache-Control: public, max-age=86400</code>；每个 IP 每分钟最多 10 次。
+    </div>
+
+    <h2>六、辅助接口</h2>
     <h3><code>GET /ha/keys</code></h3>
     <p>返回服务端支持的全部状态参数代码、输出字段列表与单位说明，便于客户端动态构造表单。</p>
 
@@ -232,7 +260,7 @@ Content-Type: application/json
     <p>返回服务名与版本号，用于探活。</p>
     <pre><code>{ "status": "ok", "service": "CoolProp API", "version": "2.0.0" }</code></pre>
 
-    <h2>六、错误响应</h2>
+    <h2>七、错误响应</h2>
     <pre><code>// 状态参数个数不是 2
 HTTP 400
 { "detail": "需要且仅需 2 个状态参数（除 P 之外），当前提供了 1 个" }
@@ -245,12 +273,28 @@ HTTP 400
 HTTP 400
 { "detail": "参数 T 的值 'abc' 不是有效的数字" }
 
+// 输入越界
+HTTP 400
+{ "detail": "参数 R 的值 1.5 超出允许范围 [0, 1]" }
+
+// 同义参数冲突
+HTTP 400
+{ "detail": "参数 T 与 Tdb 为同义参数，不能同时提供" }
+
+// batch 超过 500 点
+HTTP 400
+{ "detail": "批量点数 501 超过上限 500" }
+
+// 请求过于频繁
+HTTP 429
+{ "detail": "请求过于频繁，请稍后再试（限制：60 per 1 minute/IP）" }
+
 // CoolProp 内部错误（输入组合不一致 / 越界等）
 HTTP 500
 { "detail": "计算错误: ..." }</code></pre>
 
     <p style="margin-top:40px; color:#718096; font-size:0.88em; text-align:center;">
-        属性代码定义参考：<a href="http://www.coolprop.org/fluid_properties/HumidAir.html" target="_blank">CoolProp HumidAir 文档</a>
+        属性代码定义参考：<a href="https://www.coolprop.org/fluid_properties/HumidAir.html" target="_blank">CoolProp HumidAir 文档</a>
     </p>
 </body>
 </html>

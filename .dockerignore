@@ -3,6 +3,13 @@
 .github
 .windsurf
 venv
+.venv
+tests
+requirements-dev.txt
+evidence
+*.png
+*.svg
+*.log
 __pycache__
 **/__pycache__
 *.pyc

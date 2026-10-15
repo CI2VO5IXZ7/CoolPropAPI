@@ -28,7 +28,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Unit tests
+        run: pytest -q
 
       - name: Start service
         run: |
@@ -64,6 +67,16 @@ jobs:
           assert 49 < d['state']['H'] < 52, d
           print('ok')
           "
+
+      - name: GET /chart/hd
+        run: |
+          code=$(curl -sS -o /tmp/hd.png -w '%{http_code} %{content_type}' "http://127.0.0.1:8080/chart/hd")
+          echo "$code"
+          [ "$code" = "200 image/png" ]
+          head -c 8 /tmp/hd.png | od -An -tx1 | tr -d ' \n' | grep -q '^89504e470d0a1a0a$'
+          curl -fsS -o /tmp/hd.svg "http://127.0.0.1:8080/chart/hd?fmt=svg&points=25,0.5;30,0.6"
+          grep -q '<svg' /tmp/hd.svg
+          test "$(curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:8080/chart/hd?t_max=999')" = "400"
 
       - name: Stop service
         if: always()
