@@ -76,7 +76,7 @@ def _client_ip(request: Request) -> str:
     return get_remote_address(request)
 
 
-limiter = Limiter(key_func=_client_ip, default_limits=[DEFAULT_RATE_LIMIT], storage_uri="memory://")
+limiter = Limiter(key_func=_client_ip, application_limits=[DEFAULT_RATE_LIMIT], storage_uri="memory://")
 app.state.limiter = limiter
 
 app.add_middleware(SlowAPIASGIMiddleware)

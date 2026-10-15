@@ -100,6 +100,15 @@ def test_rate_limit_429(client):
     assert client.get("/health").status_code == 200
 
 
+def test_rate_limit_shared_across_routes(client):
+    for _ in range(30):
+        assert client.get("/ha/keys").status_code == 200
+    for _ in range(30):
+        assert client.get("/ha", params={"T": 25, "R": 0.5}).status_code == 200
+    assert client.get("/ha", params={"T": 25, "R": 0.5}).status_code == 429
+    assert client.post("/ha/batch", json={"points": [{"T": 25, "R": 0.5}]}).status_code == 429
+
+
 def test_rate_limit_per_forwarded_ip(client):
     for _ in range(60):
         client.get("/ha/keys", headers={"X-Forwarded-For": "203.0.113.1"})

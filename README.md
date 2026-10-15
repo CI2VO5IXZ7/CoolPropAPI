@@ -61,7 +61,7 @@ curl -o hd.svg "https://coolpropapi.zeabur.app/chart/hd?fmt=svg&points=25,0.5;30
 - 输入越界返回 400：`P` 50000–110000 Pa；温度类（T/Tdb/B/Twb/D/Tdp）-100–200 ℃；`R` 0–1；`W` 0–0.1 kg/kg；`H`/`Hda` -100–500 kJ/kg。
 - 同义参数（如 `T` 与 `Tdb`、`H` 与 `Hda`）同时出现返回 400。
 - `/ha/batch` 单次最多 500 点，超过返回 400；单点错误仍按点返回 `status: "error"`。
-- 限流（进程内存储）：每 IP 每分钟 60 次，`/chart/hd` 每 IP 每分钟 10 次，超出返回 429；`/health` 不限流。IP 优先取 `X-Forwarded-For` 首个地址。
+- 限流（进程内存储）：每 IP 每分钟 60 次（各接口合计），`/chart/hd` 单独为每 IP 每分钟 10 次，超出返回 429；`/health` 不限流。IP 优先取 `X-Forwarded-For` 首个地址。
 - CORS：`allow_origins=["*"]`，方法仅 GET / POST。
 
 ## 本地运行与测试
