@@ -75,7 +75,7 @@ python3 -m venv .venv
 
 访问 <http://localhost:8080> 查看文档。
 
-主要依赖（`requirements.txt` 固定版本）：CoolProp 8.0.0、FastAPI 0.143.1、uvicorn 0.54.0、pydantic 2.14.1、Jinja2 3.1.6、slowapi 0.1.10、matplotlib 3.11.2、numpy 2.5.4。依赖由 Dependabot 每月检查更新。
+主要依赖（`requirements.txt` 固定版本）：CoolProp 8.0.0、FastAPI 0.143.1、uvicorn 0.54.0、pydantic 2.14.1、Jinja2 3.1.6、slowapi 0.1.10、matplotlib 3.11.2、numpy 2.4.6。依赖由 Dependabot 每月检查更新。
 
 ## Docker 部署
 
