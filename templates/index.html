@@ -84,7 +84,7 @@
         <li>查询参数名直接使用属性代码（见第三节），值为该属性的数值。</li>
         <li>必须且只能提供 <strong>2 个状态参数</strong>（多 1 或少 1 → 400）；同义代码（如 <code>T</code> 与 <code>Tdb</code>）不能同时出现（→ 400）。</li>
         <li>输入越界直接返回 400：<code>P</code> 50000 ~ 110000 Pa；温度类 −100 ~ 200 ℃；<code>R</code> 0 ~ 1；<code>W</code> 0 ~ 0.1；<code>H</code> −100 ~ 500 kJ/kg。</li>
-        <li>限流：每个 IP 每分钟合计 60 次（<code>/chart/hd</code> 单独每分钟 10 次），超出返回 429。</li>
+        <li>限流：每个 IP 每分钟合计 60 次（<code>/chart/hd</code> 单独每分钟 10 次），超出返回 429。默认按直连地址计数，伪造 <code>X-Forwarded-For</code> 不能换配额。只有部署时设置 <code>TRUST_PROXY=1</code> 或 <code>TRUST_PROXY_HOPS</code>≥1，才按该头从右数第 N 个地址限流；地址不够 N 个时仍按直连地址。</li>
         <li>压力 <code>P</code> 是<strong>可选</strong>参数，缺省 <code>101325 Pa</code>（标准大气压）；如需非标压（高原、加压舱等）显式传入即可。</li>
         <li>响应中 <code>state</code> 字段包含该状态点的全部物性，前端自取所需字段。</li>
         <li>温度统一 ℃，焓统一 kJ/(kg 干空气)，相对湿度 0~1（小数）。</li>
