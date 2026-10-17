@@ -72,11 +72,27 @@
         .legend { margin-top: 10px; font-family: inherit; font-size: 0.88em; color: #4a5568; }
         .legend span { margin-right: 12px; }
         .chart-preview { width: 100%; height: auto; border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; }
+        .calc-banner { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+        .calc-btn {
+            display: inline-block;
+            background: #2b6cb0;
+            color: #fff;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-weight: 650;
+            white-space: nowrap;
+        }
+        .calc-btn:hover { background: #2c5282; }
     </style>
 </head>
 <body>
     <h1>湿空气物性计算 API</h1>
     <p class="sub">基于 <strong>FastAPI</strong> + <strong>CoolProp</strong>。给定任意 <strong>2 个状态参数</strong>，一次返回该状态点的<strong>全部</strong>湿空气物性，由调用方按需取用。</p>
+    <div class="note calc-banner">
+        <a class="calc-btn" href="/ui">打开计算器</a>
+        <span>单点快查、多点折线和加热 / 冷却 / 加湿 / 除湿 / 混合过程都在 <a href="/ui">/ui</a>。脚本和 AI 请继续调用本页的 <code>/ha</code>、<code>/ha/batch</code>、<code>/chart/hd</code>，计算器不替代这些接口。</span>
+    </div>
 
     <h2>一、调用规则</h2>
     <ol>
@@ -240,17 +256,30 @@ Content-Type: application/json
             <tr><td><code>fmt</code></td><td>png</td><td>png | svg</td><td>输出格式</td></tr>
             <tr><td><code>width</code></td><td>1200</td><td>600 ~ 2400 px</td><td>PNG 宽度，高度按比例</td></tr>
             <tr><td><code>points</code></td><td>—</td><td>≤ 10 个，<code>T,R;T,R</code>（℃, 0~1）</td><td>在图上标注状态点</td></tr>
+            <tr><td><code>connect</code></td><td>0</td><td>0 / false，或 1 / true</td><td>缺省只标点，标签为 <code>1:</code>、<code>2:</code>。<code>1</code> 时在相邻点之间画深色折线与箭头，标签改为 <code>A</code>、<code>B</code>、<code>C</code>…。无状态点时忽略。非法取值返回 400</td></tr>
             <tr><td><code>lang</code></td><td>zh</td><td>zh | en</td><td>标签语言；服务器缺中文字体时自动回退 en（响应头 <code>Content-Language</code>）</td></tr>
         </tbody>
     </table>
     <pre><code>GET /chart/hd
 GET /chart/hd?fmt=svg&amp;points=25,0.5;30,0.6
+GET /chart/hd?points=25,0.5;35,0.3&amp;connect=1
 GET /chart/hd?p=80000&amp;t_min=0&amp;t_max=35&amp;d_max=25&amp;lang=en</code></pre>
     <p>预览（标注 25 ℃ / 50%，落在 d ≈ 9.93 g/kg、h ≈ 50.4 kJ/kg）：</p>
     <img class="chart-preview" src="/chart/hd?width=900&amp;points=25,0.5" alt="h-d 焓湿图预览" loading="lazy">
     <div class="note">
         越界参数返回 400 JSON <code>{"detail": ...}</code>；响应带 <code>Cache-Control: public, max-age=86400</code>；每个 IP 每分钟最多 10 次。
     </div>
+
+    <h3>网页计算器 <code>GET /ui</code> 与过程链</h3>
+    <p><a href="/ui">打开计算器</a>可以做两件事：填任意两个状态参数查全量物性并在图上标一个点；或者维护最多 10 个有序状态点（手填或按过程生成），一次请求带 <code>connect=1</code> 的焓湿图。相对湿度在页面上填百分数，提交前除以 100。点落在图外时，调整 <code>t_min</code>、<code>t_max</code> 或 <code>d_max</code>。</p>
+    <p>过程在浏览器里多次调用 <code>/ha</code> 完成，没有单独的过程接口。脚本或 AI 按同样的步骤编排即可。等湿是指含湿量 <code>W</code>（kg/kg 干空气）不变。下面是等湿加热：</p>
+    <pre><code># 1) 起点，读 state.W 与 state.R
+GET /ha?T=25&amp;R=0.5
+# 2) 终点：W 不变，干球改为目标温度
+GET /ha?T=35&amp;W=&lt;上一步的 state.W&gt;
+# 3) 用两点各自的 T 与 R 连线
+GET /chart/hd?points=25,0.5;&lt;T2&gt;,&lt;R2&gt;&amp;connect=1</code></pre>
+    <p>其余过程同样只用 <code>/ha</code>：等湿冷却要求终点干球不低于起点露点；等温加湿保持干球、提高相对湿度或含湿量；绝热加湿优先固定湿球温度（<code>B</code> / <code>Twb</code>）并提高相对湿度，若这次调用失败再改用等焓（<code>H</code> 不变）；冷却除湿取盘管出风干球和相对湿度（缺省 0.95），可选再按含湿量不变再热；两风混合按干空气质量分数对 <code>W</code> 和 <code>H</code> 线性加权，再用 <code>H</code>+<code>W</code> 反查。这些折线用于教学和估算，不是法规冷负荷计算。</p>
 
     <h2>六、辅助接口</h2>
     <h3><code>GET /ha/keys</code></h3>

@@ -4,9 +4,10 @@
 - GET  /ha?<key1>=<v1>&<key2>=<v2>[&P=<Pa>]    任意 2 个状态参数 → 返回全部物性
 - POST /ha/batch                                 批量计算
 - GET  /ha/keys                                  支持的属性代码与单位说明
-- GET  /chart/hd                                 国标样式 h-d 焓湿图（PNG/SVG）
+- GET  /chart/hd                                 国标样式 h-d 焓湿图（PNG/SVG，可选 connect 折线）
 - GET  /health                                   健康检查
 - GET  /                                         使用文档主页
+- GET  /ui                                       湿空气计算器（单点快查与过程链）
 
 P 默认 101325 Pa，可显式覆盖。温度统一 ℃，焓统一 kJ/(kg 干空气)。
 输入越界、同义参数冲突、batch 超过 500 点均返回 400；默认每 IP 每分钟 60 次请求。
@@ -19,6 +20,7 @@ import math
 import os
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -301,6 +303,17 @@ async def home(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "index.html")
 
 
+def _ui_html() -> str:
+    # 不用 Jinja 渲染，页面脚本可以自由使用花括号。
+    path = Path(__file__).resolve().parent / "templates" / "ui.html"
+    return path.read_text(encoding="utf-8")
+
+
+@app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
+async def calculator() -> HTMLResponse:
+    return HTMLResponse(_ui_html())
+
+
 @app.get("/ha", summary="计算湿空气全量状态", tags=["HumidAir"])
 async def humid_air_state(request: Request) -> Dict[str, Any]:
     raw = dict(request.query_params)
@@ -386,15 +399,20 @@ async def chart_hd(
     width: int = Query(chart.DEFAULTS["width"], description="PNG 宽度 px，600–2400"),
     points: Optional[str] = Query(None, description="状态点 'T,R;T,R'（℃, 0~1），最多 10 个"),
     lang: str = Query(chart.DEFAULTS["lang"], description="zh | en"),
+    connect: Optional[str] = Query(
+        None,
+        description="1/true 时用折线和箭头连接相邻点，标签改为 A、B、C…；缺省只标点",
+    ),
 ) -> Response:
     try:
+        link = chart.parse_connect(connect)
         params = chart.validate_params(p, t_min, t_max, d_max, fmt, width, lang)
         pts = await run_in_threadpool(chart.parse_points, points, params)
     except chart.ChartParamError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     try:
-        content, used = await run_in_threadpool(chart.render_chart, params, pts)
+        content, used = await run_in_threadpool(chart.render_chart, params, pts, link)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"绘图错误: {_clean_error(e)}")
 

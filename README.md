@@ -11,11 +11,14 @@
 | 方法 | 路径 | 说明 |
 |:---:|:---|:---|
 | GET  | `/`         | 使用文档主页 |
+| GET  | `/ui`       | 湿空气计算器（单点快查、多点折线、过程链） |
 | GET  | `/ha`       | 单点全量物性计算 |
 | POST | `/ha/batch` | 批量全量物性计算（最多 500 点） |
 | GET  | `/ha/keys`  | 支持的属性代码与单位 |
 | GET  | `/chart/hd` | 国标样式 h-d 焓湿图（PNG / SVG） |
 | GET  | `/health`   | 健康检查 |
+
+给人用的页面是 `GET /ui`：任意两个状态参数查全量物性并在焓湿图上标点，或维护最多 10 个状态点、按过程生成下一点后一次出图。相对湿度在页面上填百分数。脚本和 AI 不要依赖这个页面，请继续调用 `/ha`、`/ha/batch`、`/chart/hd`。过程链没有单独接口，用多次 `/ha` 编排（见下文）。
 
 ## 快速调用
 
@@ -44,12 +47,27 @@ curl -X POST "http://<服务器IP>:18080/ha/batch" \
 | `fmt` | png | png \| svg | 输出格式 |
 | `width` | 1200 | 600–2400 px | PNG 宽度，高度按比例 |
 | `points` | — | ≤ 10 个，`T,R;T,R`（℃, 0–1） | 在图上标注状态点 |
+| `connect` | 0 | `0`/`false` 或 `1`/`true` | 缺省只标点，标签 `1:`、`2:`。`1` 时相邻点画深色折线与箭头，标签改为 `A`、`B`、`C`…。无状态点时忽略；非法值 400 |
 | `lang` | zh | zh \| en | 标签语言 |
 
 ```bash
 curl -o hd.png "http://<服务器IP>:18080/chart/hd"
 curl -o hd.svg "http://<服务器IP>:18080/chart/hd?fmt=svg&points=25,0.5;30,0.6"
+curl -o hd-path.svg "http://<服务器IP>:18080/chart/hd?fmt=svg&points=25,0.5;35,0.3&connect=1"
 ```
+
+`connect` 缺省时的出图与未加该参数时相同。计算器里的加热、冷却、加湿、除湿和混合都是浏览器多次调用 `/ha` 拼出来的。等湿加热的等价调用：
+
+```bash
+# 起点，从 JSON 里取出 state.W 与 state.R
+curl "http://<服务器IP>:18080/ha?T=25&R=0.5"
+# 终点：含湿量不变，干球改为目标温度
+curl "http://<服务器IP>:18080/ha?T=35&W=<上一步的 state.W>"
+# 用两点的干球和相对湿度连线
+curl -o path.png "http://<服务器IP>:18080/chart/hd?points=25,0.5;<T2>,<R2>&connect=1"
+```
+
+绝热加湿优先固定湿球温度（`B` 或 `Twb`）并给出新的相对湿度；若该次 `/ha` 失败，再改用等焓（`H` 不变）。冷却除湿的盘管出风相对湿度缺省 0.95，可以再按含湿量不变再热。两风混合按干空气质量分数对 `W` 和 `H` 线性加权，然后用 `H`+`W` 反查。这些是教学和估算用的折线，不是法规冷负荷计算。
 
 把 `<服务器IP>` 换成实际地址后，在浏览器打开即可预览：
 
@@ -75,7 +93,7 @@ python3 -m venv .venv
 .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080
 ```
 
-访问 <http://localhost:8080> 查看文档。
+访问 <http://localhost:8080> 查看文档，<http://localhost:8080/ui> 打开计算器。
 
 主要依赖（`requirements.txt` 固定版本）：CoolProp 8.0.0、FastAPI 0.143.1、uvicorn 0.54.0、pydantic 2.14.1、Jinja2 3.1.6、slowapi 0.1.10、matplotlib 3.11.2、numpy 2.4.6。依赖由 Dependabot 每月检查更新。
 

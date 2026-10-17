@@ -136,3 +136,101 @@ def test_prewarm_fills_cache():
     chart.clear_cache()
     main._prewarm_chart()
     assert chart._render_base.cache_info().currsize == 1
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (None, False),
+        ("", False),
+        ("0", False),
+        ("false", False),
+        ("FALSE", False),
+        ("no", False),
+        ("off", False),
+        ("1", True),
+        ("true", True),
+        ("TRUE", True),
+        ("yes", True),
+        ("on", True),
+        (" 1 ", True),
+    ],
+)
+def test_parse_connect(raw, expected):
+    assert chart.parse_connect(raw) is expected
+
+
+@pytest.mark.parametrize("raw", ["2", "maybe", "connect", "1.0"])
+def test_parse_connect_rejects(raw):
+    with pytest.raises(chart.ChartParamError, match="connect"):
+        chart.parse_connect(raw)
+
+
+def test_series_label():
+    assert chart.series_label(1, connect=False) == "1"
+    assert chart.series_label(10, connect=False) == "10"
+    assert chart.series_label(1, connect=True) == "A"
+    assert chart.series_label(10, connect=True) == "J"
+    assert chart.series_label(26, connect=True) == "Z"
+    assert chart.series_label(27, connect=True) == "P27"
+
+
+def _svg_norm(raw: bytes) -> bytes:
+    # matplotlib 每次给 clip path / marker 一个新 id，其余内容应一致。
+    import re
+    return re.sub(br"\b[mp][0-9a-f]{8,}\b", b"ID", raw)
+
+
+def test_connect_svg_png_and_default_has_no_line(client):
+    common = {"width": 600, "points": "25,0.5;32,0.4"}
+    plain = client.get("/chart/hd", params={**common, "fmt": "svg"})
+    off = client.get("/chart/hd", params={**common, "fmt": "svg", "connect": "0"})
+    linked = client.get("/chart/hd", params={**common, "fmt": "svg", "connect": "1"})
+    png = client.get("/chart/hd", params={**common, "fmt": "png", "connect": "true"})
+    assert plain.status_code == off.status_code == linked.status_code == png.status_code == 200
+    assert plain.headers["content-type"].startswith("image/svg+xml")
+    assert linked.headers["content-type"].startswith("image/svg+xml")
+    assert png.headers["content-type"] == "image/png"
+    assert _svg_norm(plain.content) == _svg_norm(off.content)
+    assert _svg_norm(plain.content) != _svg_norm(linked.content)
+    assert len(plain.content) > 1000 and len(linked.content) > 1000 and len(png.content) > 1000
+    assert png.content.startswith(PNG_MAGIC)
+    assert b"hd-connect" not in plain.content
+    assert b"<!-- 1:" in plain.content and b"<!-- 2:" in plain.content
+    assert b'id="hd-connect"' in linked.content
+    assert b"hd-connect-arrow" in linked.content
+    assert b"<!-- A:" in linked.content and b"<!-- B:" in linked.content
+    assert b"<!-- 1:" not in linked.content
+    assert b"#e67e22" in plain.content and b"#e67e22" in linked.content
+
+
+def test_connect_invalid_400(client):
+    resp = client.get("/chart/hd", params={"connect": "maybe", "width": 600})
+    assert resp.status_code == 400
+    assert "connect" in resp.json()["detail"]
+
+
+def test_connect_without_points_matches_base(client):
+    params = {"fmt": "svg", "width": 600}
+    base = client.get("/chart/hd", params=params)
+    linked = client.get("/chart/hd", params={**params, "connect": "1"})
+    assert base.status_code == linked.status_code == 200
+    assert len(base.content) > 1000 and len(linked.content) > 1000
+    assert _svg_norm(base.content) == _svg_norm(linked.content)
+    assert b"hd-connect" not in base.content
+
+
+def test_connect_render_does_not_enter_base_cache():
+    chart.clear_cache()
+    params = chart.validate_params(**{**chart.DEFAULTS, "fmt": "svg", "width": 600})
+    base, _ = chart.render_chart(params)
+    misses = chart._render_base.cache_info().misses
+    linked, _ = chart.render_chart(params, ((25.0, 0.5), (32.0, 0.4)), connect=True)
+    info = chart._render_base.cache_info()
+    assert info.currsize == 1
+    assert info.misses == misses
+    again, _ = chart.render_chart(params)
+    assert again is base
+    assert linked is not base
+    assert b"hd-connect" in linked
+    assert b"hd-connect" not in base
