@@ -1,0 +1,17 @@
+# 上海自托管：从 GHCR 拉取镜像（宿主机需能访问 ghcr.io），不在服务器上编译。
+# 对外是明文 HTTP。宿主机 18080 映射到容器内 8080。
+# 启动：docker compose pull && docker compose up -d
+# 包若未公开，先 docker login ghcr.io。不要把令牌或真实服务器 IP 写进本文件。
+
+services:
+  coolpropapi:
+    image: ghcr.io/ci2vo5ixz7/coolpropapi:latest
+    ports:
+      - "18080:8080"
+    restart: unless-stopped
+    # 可选内存上限，可按机器删除或调整。
+    mem_limit: 1g
+    # 默认不设置 TRUST_PROXY / TRUST_PROXY_HOPS，限流只看直连地址。
+    # 仅当前面有可信反向代理时再打开，例如信任最近 1 跳：
+    # environment:
+    #   TRUST_PROXY: "1"
