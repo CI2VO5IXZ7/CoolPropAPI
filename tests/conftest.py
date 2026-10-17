@@ -15,7 +15,10 @@ from main import app, limiter  # noqa: E402
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    # 用例默认处于「不信任代理」；个别用例再自行打开 TRUST_PROXY。
+    monkeypatch.delenv("TRUST_PROXY", raising=False)
+    monkeypatch.delenv("TRUST_PROXY_HOPS", raising=False)
     limiter.reset()
     with TestClient(app) as c:
         yield c

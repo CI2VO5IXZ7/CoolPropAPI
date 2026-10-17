@@ -10,6 +10,8 @@
 
 P 默认 101325 Pa，可显式覆盖。温度统一 ℃，焓统一 kJ/(kg 干空气)。
 输入越界、同义参数冲突、batch 超过 500 点均返回 400；默认每 IP 每分钟 60 次请求。
+客户端 IP 默认只取 TCP 直连地址。仅当 TRUST_PROXY=1 或 TRUST_PROXY_HOPS>=1 时
+才读取 X-Forwarded-For，并取从右数第 N 个地址（TRUST_PROXY=1 等价于 N=1）。
 """
 
 import logging
@@ -66,13 +68,38 @@ DEFAULT_RATE_LIMIT = "60/minute"
 CHART_RATE_LIMIT = "10/minute"
 
 
+def _proxy_hops() -> int:
+    """返回信任的反向代理跳数。0 表示忽略转发头，限流键用 TCP 直连地址。
+
+    TRUST_PROXY_HOPS 为大于等于 1 的整数时优先采用该跳数。
+    否则只有 TRUST_PROXY 精确等于 1 时才信任 1 跳。
+    """
+    raw_hops = os.environ.get("TRUST_PROXY_HOPS", "").strip()
+    if raw_hops:
+        try:
+            hops = int(raw_hops)
+        except ValueError:
+            hops = 0
+        if hops >= 1:
+            return hops
+    if os.environ.get("TRUST_PROXY", "").strip() == "1":
+        return 1
+    return 0
+
+
 def _client_ip(request: Request) -> str:
-    # 部署在反向代理（Zeabur）之后时，直连地址是代理，需取 X-Forwarded-For 首个地址
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        first = forwarded.split(",")[0].strip()
-        if first:
-            return first
+    # 默认不信任 X-Forwarded-For：客户端可以伪造该头，用来拆开限流桶。
+    # 仅在自有反向代理之后设置 TRUST_PROXY=1（1 跳）或 TRUST_PROXY_HOPS>=1。
+    # 代理从左往右追加自己看到的对端，因此取从右数第 N 个（最近 N 跳里最外侧那一跳
+    # 看到的地址）。不取最左侧，那一格是客户端自己填写的。地址个数少于 N 时
+    # 证明不了这个位置，改回 TCP 直连地址。
+    hops = _proxy_hops()
+    if hops >= 1:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            parts = [part.strip() for part in forwarded.split(",") if part.strip()]
+            if len(parts) >= hops:
+                return parts[-hops]
     return get_remote_address(request)
 
 

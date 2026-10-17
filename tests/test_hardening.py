@@ -1,6 +1,9 @@
-import pytest
+from typing import Optional
 
-from main import MAX_BATCH_POINTS
+import pytest
+from starlette.requests import Request
+
+from main import MAX_BATCH_POINTS, _client_ip
 
 
 @pytest.mark.parametrize(
@@ -109,8 +112,108 @@ def test_rate_limit_shared_across_routes(client):
     assert client.post("/ha/batch", json={"points": [{"T": 25, "R": 0.5}]}).status_code == 429
 
 
-def test_rate_limit_per_forwarded_ip(client):
+def _request(host: str, forwarded: Optional[str] = None) -> Request:
+    headers = []
+    if forwarded is not None:
+        headers.append((b"x-forwarded-for", forwarded.encode("latin-1")))
+    scope = {
+        "type": "http",
+        "asgi": {"spec_version": "2.3", "version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/ha/keys",
+        "raw_path": b"/ha/keys",
+        "query_string": b"",
+        "headers": headers,
+        "client": (host, 50000),
+        "server": ("test", 80),
+    }
+    return Request(scope)
+
+
+def test_client_ip_ignores_forwarded_header_by_default(monkeypatch):
+    monkeypatch.delenv("TRUST_PROXY", raising=False)
+    monkeypatch.delenv("TRUST_PROXY_HOPS", raising=False)
+    assert _client_ip(_request("10.1.1.1", "203.0.113.9, 198.51.100.9")) == "10.1.1.1"
+    assert _client_ip(_request("10.1.1.1")) == "10.1.1.1"
+
+
+@pytest.mark.parametrize("value", ["0", "2", "true", "yes", "on"])
+def test_trust_proxy_enables_only_for_literal_one(monkeypatch, value):
+    monkeypatch.setenv("TRUST_PROXY", value)
+    monkeypatch.delenv("TRUST_PROXY_HOPS", raising=False)
+    # 两个地址，避免把「TRUST_PROXY=2」误当成 2 跳时仍然碰巧落到直连地址。
+    assert _client_ip(_request("10.1.1.1", "203.0.113.9, 198.51.100.9")) == "10.1.1.1"
+
+
+def test_client_ip_trust_proxy_uses_rightmost(monkeypatch):
+    monkeypatch.setenv("TRUST_PROXY", "1")
+    monkeypatch.delenv("TRUST_PROXY_HOPS", raising=False)
+    assert _client_ip(_request("10.0.0.1", "203.0.113.9")) == "203.0.113.9"
+    assert _client_ip(_request("10.0.0.1", "203.0.113.9, 198.51.100.9")) == "198.51.100.9"
+    assert _client_ip(_request("10.0.0.1", "203.0.113.9,,198.51.100.9")) == "198.51.100.9"
+    assert _client_ip(_request("10.0.0.1")) == "10.0.0.1"
+    assert _client_ip(_request("10.0.0.1", "   ")) == "10.0.0.1"
+
+
+def test_client_ip_hops_count_from_the_right(monkeypatch):
+    monkeypatch.delenv("TRUST_PROXY", raising=False)
+    monkeypatch.setenv("TRUST_PROXY_HOPS", "2")
+    # 跳数大于等于 1 即启用，不必再设 TRUST_PROXY。右起第 2 个是客户端。
+    assert _client_ip(_request("10.0.0.1", "192.0.2.1, 203.0.113.7, 198.51.100.8")) == "203.0.113.7"
+    # 地址个数少于跳数时不采用最左侧（客户端可伪造），回退直连地址。
+    assert _client_ip(_request("10.0.0.1", "203.0.113.7")) == "10.0.0.1"
+
+
+def test_invalid_hops_falls_back_to_trust_proxy_flag(monkeypatch):
+    monkeypatch.setenv("TRUST_PROXY", "1")
+    monkeypatch.setenv("TRUST_PROXY_HOPS", "nope")
+    assert _client_ip(_request("10.0.0.1", "203.0.113.5, 198.51.100.2")) == "198.51.100.2"
+
+
+def test_trust_proxy_hops_zero_falls_back_to_trust_proxy(monkeypatch):
+    monkeypatch.setenv("TRUST_PROXY", "1")
+    monkeypatch.setenv("TRUST_PROXY_HOPS", "0")
+    assert _client_ip(_request("10.0.0.1", "203.0.113.5, 198.51.100.2")) == "198.51.100.2"
+
+
+def test_forged_xff_cannot_bypass_rate_limit(client, monkeypatch):
+    monkeypatch.delenv("TRUST_PROXY", raising=False)
+    monkeypatch.delenv("TRUST_PROXY_HOPS", raising=False)
+    for i in range(60):
+        resp = client.get("/ha/keys", headers={"X-Forwarded-For": f"203.0.113.{i}"})
+        assert resp.status_code == 200, resp.text
+    assert client.get("/ha/keys", headers={"X-Forwarded-For": "198.51.100.20"}).status_code == 429
+    assert client.get("/ha/keys", headers={"X-Forwarded-For": "203.0.113.1, 198.51.100.8"}).status_code == 429
+    assert client.get("/ha/keys").status_code == 429
+
+
+def test_trust_proxy_rate_limit_follows_rightmost_header(client, monkeypatch):
+    monkeypatch.delenv("TRUST_PROXY_HOPS", raising=False)
+    monkeypatch.setenv("TRUST_PROXY", "1")
     for _ in range(60):
-        client.get("/ha/keys", headers={"X-Forwarded-For": "203.0.113.1"})
+        assert client.get("/ha/keys", headers={"X-Forwarded-For": "203.0.113.1"}).status_code == 200
     assert client.get("/ha/keys", headers={"X-Forwarded-For": "203.0.113.1"}).status_code == 429
-    assert client.get("/ha/keys", headers={"X-Forwarded-For": "203.0.113.2, 10.0.0.1"}).status_code == 200
+    # 左侧伪造地址被忽略，最右侧不同则是另一个限流桶。
+    assert client.get("/ha/keys", headers={"X-Forwarded-For": "203.0.113.1, 198.51.100.8"}).status_code == 200
+    # 最右侧仍是已耗尽的地址，即使左侧换成别的值。
+    assert client.get("/ha/keys", headers={"X-Forwarded-For": "198.51.100.9, 203.0.113.1"}).status_code == 429
+    assert client.get("/ha/keys", headers={"X-Forwarded-For": "203.0.113.2"}).status_code == 200
+    # 没有转发头时回到直连地址，不占用上面的桶。
+    assert client.get("/ha/keys").status_code == 200
+
+
+def test_trust_proxy_hops_rate_limit_uses_nth_from_right(client, monkeypatch):
+    monkeypatch.delenv("TRUST_PROXY", raising=False)
+    monkeypatch.setenv("TRUST_PROXY_HOPS", "2")
+    for _ in range(60):
+        resp = client.get("/ha/keys", headers={"X-Forwarded-For": "198.51.100.1, 203.0.113.10, 10.0.0.1"})
+        assert resp.status_code == 200, resp.text
+    # 从右数第 2 个不变；最左伪造值和最右代理地址都变了，仍是同一桶。
+    same = client.get("/ha/keys", headers={"X-Forwarded-For": "198.51.100.99, 203.0.113.10, 10.0.0.2"})
+    assert same.status_code == 429
+    other = client.get("/ha/keys", headers={"X-Forwarded-For": "198.51.100.1, 203.0.113.11, 10.0.0.1"})
+    assert other.status_code == 200
+    # 只有 1 个地址，不足 2 跳：忽略该头，按直连地址另计。
+    assert client.get("/ha/keys", headers={"X-Forwarded-For": "203.0.113.10"}).status_code == 200
