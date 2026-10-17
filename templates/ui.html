@@ -1,0 +1,984 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>湿空气计算器</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0 auto;
+            max-width: 980px;
+            padding: 16px 16px 48px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            line-height: 1.55;
+            color: #1f2933;
+            background: #f7f8fa;
+        }
+        h1 { font-size: 1.6rem; margin: 0 0 6px; }
+        h2 { font-size: 1.1rem; margin: 22px 0 8px; }
+        a { color: #1d4e89; }
+        .sub { color: #52606d; margin: 0 0 14px; }
+        .card {
+            background: #fff;
+            border: 1px solid #e4e7eb;
+            border-radius: 8px;
+            padding: 14px;
+            margin: 12px 0;
+        }
+        .row, .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        label { display: flex; flex-direction: column; gap: 4px; font-size: 0.92rem; }
+        input, select, button {
+            font: inherit;
+            padding: 8px 10px;
+            border: 1px solid #cbd2d9;
+            border-radius: 6px;
+            background: #fff;
+            min-height: 44px;
+        }
+        button { cursor: pointer; background: #1d4e89; color: #fff; border-color: #1d4e89; }
+        button.ghost { background: #fff; color: #1f2933; }
+        button:disabled { opacity: 0.45; cursor: default; }
+        .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+        .tabs { display: flex; gap: 8px; }
+        .tabs button { background: #fff; color: #1f2933; }
+        .tabs button.active { background: #1d4e89; color: #fff; }
+        .unit, .hint, .status { color: #52606d; font-size: 0.88rem; }
+        .error {
+            color: #9b2c2c;
+            background: #fff5f5;
+            border: 1px solid #feb2b2;
+            border-radius: 6px;
+            padding: 8px 10px;
+            white-space: pre-wrap;
+        }
+        .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        table { width: 100%; border-collapse: collapse; background: #fff; font-size: 0.92rem; }
+        th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e4e7eb; white-space: nowrap; }
+        th { background: #f0f4f8; }
+        img.chart { width: 100%; max-width: 100%; height: auto; background: #fff; border: 1px solid #e4e7eb; border-radius: 8px; }
+        ol.points { list-style: none; padding: 0; margin: 0; }
+        ol.points li {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #e4e7eb;
+        }
+        .point-main { min-width: 0; }
+        .point-actions { display: flex; gap: 6px; }
+        .point-actions button { min-height: 36px; padding: 4px 8px; background: #fff; color: #1f2933; }
+        .tag { font-weight: 700; margin-right: 6px; }
+        details { margin-top: 8px; }
+        summary { cursor: pointer; }
+        .inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .inline input[type="number"] { width: 8rem; }
+        @media (max-width: 700px) {
+            .row, .pair { grid-template-columns: 1fr; }
+            h1 { font-size: 1.35rem; }
+        }
+    </style>
+</head>
+<body>
+    <p><a href="/">返回使用文档</a></p>
+    <h1>湿空气计算器</h1>
+    <p class="sub">任意两个状态参数查全量物性，或把最多 10 个点连成 A→B→C。出图每次只请求一次焓湿图。相对湿度填百分数，提交前除以 100。</p>
+
+    <section class="card">
+        <div class="row">
+            <label>压力 P（Pa，留空按 101325）
+                <input id="pressure" type="number" step="any" value="101325" inputmode="decimal">
+            </label>
+            <div>
+                <details>
+                    <summary>图幅选项</summary>
+                    <div class="row" style="margin-top:8px">
+                        <label>t_min（℃）<input id="t_min" type="number" step="any" value="-10"></label>
+                        <label>t_max（℃）<input id="t_max" type="number" step="any" value="45"></label>
+                        <label>d_max（g/kg）<input id="d_max" type="number" step="any" value="30"></label>
+                    </div>
+                    <p class="hint">点落在图外时，按提示调整 t_min、t_max 或 d_max。焓湿图每分钟大约 10 次，请不要连续刷新。</p>
+                </details>
+            </div>
+        </div>
+    </section>
+
+    <div class="tabs">
+        <button type="button" id="tab-single" class="active">单点快查</button>
+        <button type="button" id="tab-series">多点过程链</button>
+    </div>
+
+    <section id="panel-single" class="card">
+        <form id="single-form">
+            <div class="pair">
+                <label>参数 1
+                    <select id="single-key-1"></select>
+                    <input id="single-val-1" type="number" step="any" inputmode="decimal" required>
+                    <span id="single-hint-1" class="unit"></span>
+                </label>
+                <label>参数 2
+                    <select id="single-key-2"></select>
+                    <input id="single-val-2" type="number" step="any" inputmode="decimal" required>
+                    <span id="single-hint-2" class="unit"></span>
+                </label>
+            </div>
+            <div class="actions">
+                <button type="submit" id="single-go">查询并标点</button>
+            </div>
+        </form>
+        <p id="single-error" class="error" hidden></p>
+        <div class="table-wrap">
+            <table id="single-table" hidden>
+                <thead><tr><th>物性</th><th>数值</th><th>单位</th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+        <img id="single-chart" class="chart" alt="单点焓湿图" hidden>
+    </section>
+
+    <section id="panel-series" class="card" hidden>
+        <h2>状态点（最多 10 个）</h2>
+        <ol id="point-list" class="points"></ol>
+        <p id="point-empty" class="hint">尚未添加状态点。可手填，或在下面用过程生成。</p>
+        <form id="add-form">
+            <div class="pair">
+                <label>参数 1
+                    <select id="point-key-1"></select>
+                    <input id="point-val-1" type="number" step="any" inputmode="decimal" required>
+                    <span id="point-hint-1" class="unit"></span>
+                </label>
+                <label>参数 2
+                    <select id="point-key-2"></select>
+                    <input id="point-val-2" type="number" step="any" inputmode="decimal" required>
+                    <span id="point-hint-2" class="unit"></span>
+                </label>
+            </div>
+            <div class="actions">
+                <button type="submit" id="add-point">添加状态点</button>
+                <button type="button" id="clear-points" class="ghost">清空</button>
+            </div>
+        </form>
+
+        <h2>按过程生成下一点</h2>
+        <label>过程类型
+            <select id="proc-type">
+                <option value="sens_heat">等湿加热</option>
+                <option value="sens_cool">等湿冷却</option>
+                <option value="isoth_humid">等温加湿</option>
+                <option value="adiab_humid">绝热加湿</option>
+                <option value="cool_dehumid">冷却除湿</option>
+                <option value="mix">两风混合</option>
+            </select>
+        </label>
+        <div id="proc-start">
+            <p class="hint">序列为空时，下面两个参数作为起点，成功后和生成点一起加入。</p>
+            <div class="pair">
+                <label>起点参数 1
+                    <select id="start-key-1"></select>
+                    <input id="start-val-1" type="number" step="any" inputmode="decimal">
+                    <span id="start-hint-1" class="unit"></span>
+                </label>
+                <label>起点参数 2
+                    <select id="start-key-2"></select>
+                    <input id="start-val-2" type="number" step="any" inputmode="decimal">
+                    <span id="start-hint-2" class="unit"></span>
+                </label>
+            </div>
+        </div>
+        <div id="proc-fields"></div>
+        <p id="proc-hint" class="hint"></p>
+        <div class="actions">
+            <button type="button" id="proc-go">生成下一点</button>
+            <button type="button" id="draw-series">生成图</button>
+        </div>
+        <p id="series-status" class="status"></p>
+        <p id="series-error" class="error" hidden></p>
+        <div class="table-wrap">
+            <table id="series-table" hidden>
+                <thead>
+                    <tr><th>点</th><th>来源</th><th>T ℃</th><th>Twb ℃</th><th>Tdp ℃</th><th>φ %</th><th>d g/kg</th><th>H kJ/kg</th></tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+        <ul id="deltas"></ul>
+        <img id="series-chart" class="chart" alt="过程链焓湿图" hidden>
+        <p class="hint">等湿指含湿量 W（kg/kg 干空气）不变。绝热加湿沿等湿球温度；若湿球路径失败，则回退为等焓（H 不变）。冷却除湿默认出风相对湿度 95%（API 为 0.95），可选再热。真实盘管有旁通，这里是教学和估算用的折线，不做法规冷负荷计算。</p>
+    </section>
+    <noscript>请启用 JavaScript 后再使用计算器。</noscript>
+
+    <script>
+    // 过程换算与 psychro_process.py 的 rh_percent_to_fraction、mix_humidity_enthalpy 等纯函数一致。
+    // 绝热加湿沿等湿球（B 不变）；该次 /ha 失败或算不出状态时，回退为等焓（H 不变）。
+    (function () {
+        var MAX_POINTS = 10;
+        var FIELDS = [
+            { key: "T", label: "干球温度 T", unit: "℃" },
+            { key: "Tdb", label: "干球温度 Tdb", unit: "℃" },
+            { key: "B", label: "湿球温度 B", unit: "℃" },
+            { key: "Twb", label: "湿球温度 Twb", unit: "℃" },
+            { key: "D", label: "露点温度 D", unit: "℃" },
+            { key: "Tdp", label: "露点温度 Tdp", unit: "℃" },
+            { key: "R", label: "相对湿度 R", unit: "%", percent: true },
+            { key: "W", label: "含湿量 W", unit: "kg/kg" },
+            { key: "H", label: "比焓 H", unit: "kJ/kg" },
+            { key: "Hda", label: "比焓 Hda", unit: "kJ/kg" },
+            { key: "V", label: "比容 V", unit: "m³/kg" },
+            { key: "Vda", label: "比容 Vda", unit: "m³/kg" },
+            { key: "S", label: "比熵 S", unit: "J/(kg·K)" },
+            { key: "Sda", label: "比熵 Sda", unit: "J/(kg·K)" },
+            { key: "Y", label: "摩尔分数 Y", unit: "mol/mol" },
+            { key: "psi_w", label: "摩尔分数 psi_w", unit: "mol/mol" }
+        ];
+        var SYNONYM_GROUPS = [
+            ["T", "Tdb"], ["B", "Twb"], ["D", "Tdp"], ["H", "Hda"],
+            ["V", "Vda"], ["S", "Sda"], ["Y", "psi_w"]
+        ];
+        var OUTPUTS = [
+            ["T", "干球温度", "℃", 2],
+            ["Twb", "湿球温度", "℃", 2],
+            ["Tdp", "露点温度", "℃", 2],
+            ["R", "相对湿度", "0~1", 4],
+            ["W", "含湿量", "kg/kg 干空气", 5],
+            ["H", "比焓", "kJ/kg 干空气", 2],
+            ["V", "比容", "m³/kg 干空气", 4],
+            ["S", "比熵", "J/(kg·K)", 2],
+            ["Y", "水蒸气摩尔分数", "mol/mol", 5]
+        ];
+        var points = [];
+        var busy = false;
+
+        function fieldByKey(key) {
+            for (var i = 0; i < FIELDS.length; i++) {
+                if (FIELDS[i].key === key) return FIELDS[i];
+            }
+            return { key: key, label: key, unit: "", percent: false };
+        }
+
+        function rhPercentToFraction(percent) {
+            var n = Number(percent);
+            if (!Number.isFinite(n)) throw new Error("相对湿度不是有效数字");
+            if (n < 0 || n > 100) throw new Error("相对湿度须在 0~100% 之间");
+            return n / 100;
+        }
+
+        function mixHumidityEnthalpy(f, w1, h1, w2, h2) {
+            var pairs = [["f", f], ["W1", w1], ["H1", h1], ["W2", w2], ["H2", h2]];
+            var nums = [];
+            for (var i = 0; i < pairs.length; i++) {
+                var n = Number(pairs[i][1]);
+                if (!Number.isFinite(n)) throw new Error("混合参数 " + pairs[i][0] + "不是有效数字");
+                nums.push(n);
+            }
+            if (!(nums[0] > 0 && nums[0] < 1)) {
+                throw new Error("混合质量分数 f 须在 0 与 1 之间（不含端点）");
+            }
+            return {
+                W: nums[0] * nums[1] + (1 - nums[0]) * nums[3],
+                H: nums[0] * nums[2] + (1 - nums[0]) * nums[4]
+            };
+        }
+
+        function dryAirMassFraction(m1, m2) {
+            var a = Number(m1);
+            var b = Number(m2);
+            if (!Number.isFinite(a)) throw new Error("m1不是有效数字");
+            if (!Number.isFinite(b)) throw new Error("m2不是有效数字");
+            if (!(a > 0 && b > 0)) throw new Error("两股风的干空气质量须为正数");
+            return a / (a + b);
+        }
+
+        function validateSensibleHeat(tS, tOut) {
+            if (!Number.isFinite(tS)) throw new Error("起点干球不是有效数字");
+            if (!Number.isFinite(tOut)) throw new Error("终点干球不是有效数字");
+            if (!(tOut > tS)) throw new Error("等湿加热的终点干球须高于起点");
+        }
+
+        function validateSensibleCool(tS, tdpS, tOut) {
+            if (!Number.isFinite(tS)) throw new Error("起点干球不是有效数字");
+            if (!Number.isFinite(tdpS)) throw new Error("起点露点不是有效数字");
+            if (!Number.isFinite(tOut)) throw new Error("终点干球不是有效数字");
+            if (!(tOut < tS)) throw new Error("等湿冷却的终点干球须低于起点");
+            if (tOut < tdpS) throw new Error("终点干球低于露点，请改用冷却除湿");
+        }
+
+        function validateIsothermalHumid(current, target, kind) {
+            if (!Number.isFinite(current)) throw new Error("起点湿度不是有效数字");
+            if (!Number.isFinite(target)) throw new Error("终点湿度不是有效数字");
+            if (!(target > current)) {
+                if (kind === "R") throw new Error("等温加湿的终点相对湿度须高于起点");
+                throw new Error("等温加湿的终点含湿量须高于起点");
+            }
+        }
+
+        function validateAdiabaticTarget(rS, rOut) {
+            if (!Number.isFinite(rS)) throw new Error("起点相对湿度不是有效数字");
+            if (!Number.isFinite(rOut)) throw new Error("终点相对湿度不是有效数字");
+            if (rOut < 0 || rOut > 1) throw new Error("终点相对湿度须在 0~1 之间");
+            if (!(rOut > rS)) throw new Error("绝热加湿的终点相对湿度须高于起点");
+        }
+
+        function validateCoilOutlet(tS, tCoil) {
+            if (!Number.isFinite(tS)) throw new Error("起点干球不是有效数字");
+            if (!Number.isFinite(tCoil)) throw new Error("盘管出风干球不是有效数字");
+            if (!(tCoil < tS)) throw new Error("盘管出风干球须低于起点干球");
+        }
+
+        function validateReheat(tCoil, tReheat) {
+            if (!Number.isFinite(tCoil)) throw new Error("盘管出风干球不是有效数字");
+            if (!Number.isFinite(tReheat)) throw new Error("再热干球不是有效数字");
+            if (!(tReheat > tCoil)) throw new Error("再热温度须高于盘管出风干球");
+        }
+
+        function validateDehumid(wS, wCoil) {
+            if (!Number.isFinite(wS)) throw new Error("起点含湿量不是有效数字");
+            if (!Number.isFinite(wCoil)) throw new Error("盘管出风含湿量不是有效数字");
+            if (!(wCoil < wS)) throw new Error("盘管出风含湿量不低于起点，未发生除湿，请降低 T_coil 或改用等湿冷却");
+        }
+
+        function conflictingSynonyms(keys) {
+            var present = {};
+            keys.forEach(function (k) { present[k] = true; });
+            for (var i = 0; i < SYNONYM_GROUPS.length; i++) {
+                var hit = SYNONYM_GROUPS[i].filter(function (k) { return present[k]; });
+                if (hit.length > 1) return hit;
+            }
+            return null;
+        }
+
+        function seriesLabel(index) {
+            if (index <= 26) return String.fromCharCode(64 + index);
+            return "P" + index;
+        }
+
+        function blockedKeys(key) {
+            var block = {};
+            block[key] = true;
+            SYNONYM_GROUPS.forEach(function (g) {
+                if (g.indexOf(key) !== -1) g.forEach(function (k) { block[k] = true; });
+            });
+            return block;
+        }
+
+        function fillSelect(select, preferred) {
+            select.innerHTML = "";
+            FIELDS.forEach(function (f) {
+                var opt = document.createElement("option");
+                opt.value = f.key;
+                opt.textContent = f.label + "（" + f.unit + "）";
+                select.appendChild(opt);
+            });
+            if (preferred) select.value = preferred;
+        }
+
+        function applyBlocked(select, blocked, preferred) {
+            var first = "";
+            for (var i = 0; i < select.options.length; i++) {
+                var dis = !!blocked[select.options[i].value];
+                select.options[i].disabled = dis;
+                if (!dis && !first) first = select.options[i].value;
+            }
+            var want = preferred || select.value;
+            select.value = blocked[want] ? first : want;
+        }
+
+        function bindPair(selA, selB, hintA, hintB) {
+            function hintFor(sel, hint) {
+                if (!hint) return;
+                var f = fieldByKey(sel.value);
+                hint.textContent = f.percent ? "百分数，例如 50 表示 50%，提交前 ÷100" : f.unit;
+            }
+            function sync() {
+                applyBlocked(selB, blockedKeys(selA.value), selB.value);
+                applyBlocked(selA, blockedKeys(selB.value), selA.value);
+                hintFor(selA, hintA);
+                hintFor(selB, hintB);
+            }
+            selA.addEventListener("change", sync);
+            selB.addEventListener("change", sync);
+            sync();
+        }
+
+        function readPressure() {
+            var raw = document.getElementById("pressure").value.trim();
+            if (raw === "") return null;
+            var n = Number(raw);
+            if (!Number.isFinite(n)) throw new Error("压力 P 不是有效数字");
+            return n;
+        }
+
+        function readFinite(id, label) {
+            var el = document.getElementById(id);
+            if (!el) throw new Error("请填写" + label);
+            var raw = el.value.trim();
+            if (raw === "") throw new Error("请填写" + label);
+            var n = Number(raw);
+            if (!Number.isFinite(n)) throw new Error(label + "不是有效数字");
+            return n;
+        }
+
+        function readOne(keyId, valId) {
+            var key = document.getElementById(keyId).value;
+            var text = document.getElementById(valId).value.trim();
+            if (!key || text === "") throw new Error("请完整填写两个状态参数");
+            var n = Number(text);
+            if (!Number.isFinite(n)) throw new Error("状态参数须为数字");
+            var field = fieldByKey(key);
+            var api = field.percent ? rhPercentToFraction(n) : n;
+            return { key: key, api: api, shown: field.percent ? (text + "%") : text };
+        }
+
+        function readTwo(k1, v1, k2, v2) {
+            var a = readOne(k1, v1);
+            var b = readOne(k2, v2);
+            if (a.key === b.key) throw new Error("两个状态参数不能相同");
+            var conflict = conflictingSynonyms([a.key, b.key]);
+            if (conflict) throw new Error("参数 " + conflict[0] + " 与 " + conflict[1] + " 为同义参数，不能同时提供");
+            var inputs = {};
+            inputs[a.key] = a.api;
+            inputs[b.key] = b.api;
+            return { inputs: inputs, display: [{ key: a.key, text: a.shown }, { key: b.key, text: b.shown }] };
+        }
+
+        function haQuery(inputs, pressure) {
+            var q = new URLSearchParams();
+            Object.keys(inputs).forEach(function (k) { q.set(k, String(inputs[k])); });
+            if (pressure !== null && pressure !== undefined && pressure !== "") q.set("P", String(pressure));
+            return q;
+        }
+
+        function haUrl(inputs, pressure) {
+            return "/ha?" + haQuery(inputs, pressure).toString();
+        }
+
+        function withPressure(inputs, pressure) {
+            var point = {};
+            Object.keys(inputs).forEach(function (k) { point[k] = inputs[k]; });
+            if (pressure !== null && pressure !== undefined && pressure !== "") point.P = pressure;
+            return point;
+        }
+
+        async function errorMessage(resp) {
+            var detail = "";
+            try {
+                var data = await resp.json();
+                if (data && typeof data.detail === "string") detail = data.detail;
+            } catch (ignore) {
+                detail = "";
+            }
+            if (resp.status === 429) return detail || "请求过于频繁，请稍后再试";
+            if (resp.status === 400) return detail || "请求参数不正确";
+            return detail || ("请求失败（HTTP " + resp.status + "）");
+        }
+
+        async function apiJson(url, options) {
+            var resp;
+            try {
+                resp = await fetch(url, options);
+            } catch (ignore) {
+                throw new Error("网络错误，请稍后重试");
+            }
+            if (!resp.ok) throw new Error(await errorMessage(resp));
+            return resp.json();
+        }
+
+        function chartHint(message) {
+            if (message.indexOf("图幅") >= 0 || message.indexOf("含湿量") >= 0 || message.indexOf("温度") >= 0) {
+                return message + " 可在「图幅选项」里调整 t_min、t_max 或 d_max。";
+            }
+            return message;
+        }
+
+        function chartUrl(pointsStr, connect) {
+            var q = new URLSearchParams();
+            var pressure = readPressure();
+            if (pressure !== null) q.set("p", String(pressure));
+            q.set("t_min", String(readFinite("t_min", "t_min")));
+            q.set("t_max", String(readFinite("t_max", "t_max")));
+            q.set("d_max", String(readFinite("d_max", "d_max")));
+            q.set("lang", "zh");
+            q.set("width", "1000");
+            q.set("fmt", "png");
+            if (pointsStr) q.set("points", pointsStr);
+            if (connect) q.set("connect", "1");
+            return "/chart/hd?" + q.toString();
+        }
+
+        async function loadChart(img, url) {
+            var resp;
+            try {
+                resp = await fetch(url);
+            } catch (ignore) {
+                throw new Error("网络错误，请稍后重试");
+            }
+            if (!resp.ok) throw new Error(chartHint(await errorMessage(resp)));
+            var blob = await resp.blob();
+            if (!blob || !blob.size) throw new Error("焓湿图为空");
+            if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+            var obj = URL.createObjectURL(blob);
+            img.dataset.url = obj;
+            img.src = obj;
+            img.hidden = false;
+            img.scrollIntoView({ block: "nearest" });
+        }
+
+        function showError(id, message) {
+            var el = document.getElementById(id);
+            el.hidden = !message;
+            el.textContent = message || "";
+        }
+
+        function fmt(v, digits) {
+            if (v === null || v === undefined || !Number.isFinite(Number(v))) return "—";
+            return Number(v).toFixed(digits);
+        }
+
+        function assertPlottable(state, where) {
+            if (!state || state.T === null || state.T === undefined || state.R === null || state.R === undefined) {
+                throw new Error(where + "缺少干球温度或相对湿度，无法在焓湿图上标注");
+            }
+        }
+
+        function displayFromInputs(inputs) {
+            return Object.keys(inputs).map(function (k) {
+                var f = fieldByKey(k);
+                var text = f.percent ? (String(Math.round(inputs[k] * 1000) / 10) + "%") : String(inputs[k]);
+                return { key: k, text: text };
+            });
+        }
+
+        function makePoint(inputs, state, source, pressure) {
+            return {
+                inputs: inputs,
+                display: displayFromInputs(inputs),
+                state: state,
+                source: source,
+                pressure: pressure
+            };
+        }
+
+        async function ensureState(point, pressure) {
+            if (point.state && point.pressure === pressure && point.state.T !== null && point.state.R !== null) {
+                return point.state;
+            }
+            var data = await apiJson(haUrl(point.inputs, pressure));
+            point.state = data.state;
+            point.pressure = pressure;
+            assertPlottable(point.state, "该点");
+            return point.state;
+        }
+
+        function renderSingle(data) {
+            var tbody = document.querySelector("#single-table tbody");
+            tbody.innerHTML = "";
+            OUTPUTS.forEach(function (spec) {
+                var tr = document.createElement("tr");
+                var v = data.state[spec[0]];
+                var shown = fmt(v, spec[3]);
+                if (spec[0] === "R" && v !== null && v !== undefined) shown += "（" + (v * 100).toFixed(1) + "%）";
+                if (spec[0] === "W" && v !== null && v !== undefined) shown += "（" + (v * 1000).toFixed(2) + " g/kg）";
+                [spec[1], shown, spec[2]].forEach(function (text) {
+                    var td = document.createElement("td");
+                    td.textContent = text;
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+            document.getElementById("single-table").hidden = false;
+        }
+
+        function hideSeriesChart() {
+            document.getElementById("series-chart").hidden = true;
+        }
+
+        function renderSeries() {
+            var list = document.getElementById("point-list");
+            list.innerHTML = "";
+            document.getElementById("point-empty").hidden = points.length > 0;
+            document.getElementById("proc-start").hidden = points.length > 0;
+            points.forEach(function (p, i) {
+                var li = document.createElement("li");
+                var main = document.createElement("div");
+                main.className = "point-main";
+                var title = document.createElement("div");
+                var tag = document.createElement("span");
+                tag.className = "tag";
+                tag.textContent = seriesLabel(i + 1);
+                title.appendChild(tag);
+                title.appendChild(document.createTextNode(p.source + " · " + p.display.map(function (d) {
+                    return d.key + "=" + d.text;
+                }).join("，")));
+                main.appendChild(title);
+                if (p.state && p.state.T !== null && p.state.T !== undefined) {
+                    var sub = document.createElement("div");
+                    sub.className = "hint";
+                    var phi = (p.state.R === null || p.state.R === undefined) ? null : p.state.R * 100;
+                    var dew = (p.state.W === null || p.state.W === undefined) ? null : p.state.W * 1000;
+                    sub.textContent = "T=" + fmt(p.state.T, 2) + " ℃  φ=" + fmt(phi, 1) + "%  d=" + fmt(dew, 2) + " g/kg  h=" + fmt(p.state.H, 2);
+                    main.appendChild(sub);
+                } else {
+                    var pending = document.createElement("div");
+                    pending.className = "hint";
+                    pending.textContent = "未计算";
+                    main.appendChild(pending);
+                }
+                var actions = document.createElement("div");
+                actions.className = "point-actions";
+                [["up", "上移", i === 0], ["down", "下移", i === points.length - 1], ["del", "删除", false]].forEach(function (spec) {
+                    var btn = document.createElement("button");
+                    btn.type = "button";
+                    btn.textContent = spec[1];
+                    btn.disabled = spec[2];
+                    btn.setAttribute("data-act", spec[0]);
+                    btn.setAttribute("data-i", String(i));
+                    actions.appendChild(btn);
+                });
+                li.appendChild(main);
+                li.appendChild(actions);
+                list.appendChild(li);
+            });
+            renderSummary();
+        }
+
+        function renderSummary() {
+            var table = document.getElementById("series-table");
+            var tbody = table.querySelector("tbody");
+            var deltas = document.getElementById("deltas");
+            tbody.innerHTML = "";
+            deltas.innerHTML = "";
+            var any = points.some(function (p) { return p.state; });
+            table.hidden = !any;
+            points.forEach(function (p, i) {
+                if (!p.state) return;
+                var s = p.state;
+                var tr = document.createElement("tr");
+                [seriesLabel(i + 1), p.source, fmt(s.T, 2), fmt(s.Twb, 2), fmt(s.Tdp, 2), fmt(s.R === null || s.R === undefined ? null : s.R * 100, 1), fmt(s.W === null || s.W === undefined ? null : s.W * 1000, 3), fmt(s.H, 2)].forEach(function (text) {
+                    var td = document.createElement("td");
+                    td.textContent = text;
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+            for (var i = 0; i < points.length - 1; i++) {
+                var a = points[i].state;
+                var b = points[i + 1].state;
+                if (!a || !b) continue;
+                var li = document.createElement("li");
+                var dT = (a.T === null || b.T === null) ? "—" : (b.T - a.T).toFixed(2);
+                var dW = (a.W === null || b.W === null) ? "—" : ((b.W - a.W) * 1000).toFixed(3);
+                var dH = (a.H === null || b.H === null) ? "—" : (b.H - a.H).toFixed(2);
+                li.textContent = seriesLabel(i + 1) + "→" + seriesLabel(i + 2) + "  ΔT=" + dT + " ℃  Δd=" + dW + " g/kg  ΔH=" + dH + " kJ/kg";
+                deltas.appendChild(li);
+            }
+        }
+
+        function pointsNeeded(kind) {
+            if (kind === "cool_dehumid") {
+                var box = document.getElementById("proc-reheat");
+                if (box && box.checked) return 2;
+            }
+            return 1;
+        }
+
+        function renderProcFields() {
+            var kind = document.getElementById("proc-type").value;
+            var host = document.getElementById("proc-fields");
+            var hint = document.getElementById("proc-hint");
+            host.innerHTML = "";
+            if (kind === "sens_heat" || kind === "sens_cool") {
+                host.innerHTML = '<label>终点干球 T_out（℃）<input id="proc-t-out" type="number" step="any" inputmode="decimal"></label>';
+                hint.textContent = kind === "sens_heat"
+                    ? "含湿量 W 不变，干球温度升高。终点干球须高于起点。"
+                    : "含湿量 W 不变，干球温度降低，且不能低于起点露点。低于露点时请改用冷却除湿。";
+            } else if (kind === "isoth_humid") {
+                host.innerHTML = '<div class="inline"><label><input type="radio" name="humid-mode" value="r" checked> 终点相对湿度（%）</label><input id="proc-r-out" type="number" step="any" inputmode="decimal"></div><div class="inline"><label><input type="radio" name="humid-mode" value="w"> 终点含湿量 W（kg/kg）</label><input id="proc-w-out" type="number" step="any" inputmode="decimal"></div>';
+                hint.textContent = "干球温度不变，含湿量增加。相对湿度填百分数。";
+            } else if (kind === "adiab_humid") {
+                host.innerHTML = '<label>终点相对湿度（%）<input id="proc-r-out" type="number" step="any" inputmode="decimal" value="95"></label>';
+                hint.textContent = "沿等湿球温度加湿（湿球温度不变）。若湿球路径失败，自动改用等焓（比焓 H 不变）。建议不超过 95%。";
+            } else if (kind === "cool_dehumid") {
+                host.innerHTML = '<div class="pair"><label>盘管出风干球 T_coil（℃）<input id="proc-t-coil" type="number" step="any" inputmode="decimal"></label><label>出风相对湿度 R_coil（%，默认 95）<input id="proc-r-coil" type="number" step="any" inputmode="decimal" value="95"></label></div><div class="inline"><label><input id="proc-reheat" type="checkbox"> 再热</label><label>再热干球 T_reheat（℃）<input id="proc-t-reheat" type="number" step="any" inputmode="decimal" disabled></label></div>';
+                hint.textContent = "盘管出风按干球和相对湿度确定，默认 95%（即 0.95）。勾选再热后，再按含湿量不变加热到 T_reheat，会多占一个点。";
+                document.getElementById("proc-reheat").addEventListener("change", function () {
+                    document.getElementById("proc-t-reheat").disabled = !document.getElementById("proc-reheat").checked;
+                });
+            } else if (kind === "mix") {
+                host.innerHTML = '<p class="hint">点②只参与计算，不单独入列。混合点接在当前最后一点之后。</p><div class="pair"><label>点②参数 1<select id="mix-key-1"></select><input id="mix-val-1" type="number" step="any" inputmode="decimal"><span id="mix-hint-1" class="unit"></span></label><label>点②参数 2<select id="mix-key-2"></select><input id="mix-val-2" type="number" step="any" inputmode="decimal"><span id="mix-hint-2" class="unit"></span></label></div><div class="inline"><label><input type="radio" name="mix-mode" value="f" checked> 质量分数 f=m1/(m1+m2)</label><input id="proc-f" type="number" step="any" inputmode="decimal" value="0.5"></div><div class="inline"><label><input type="radio" name="mix-mode" value="ratio"> 质量比 m1:m2</label><input id="proc-m1" type="number" step="any" inputmode="decimal" placeholder="m1"><input id="proc-m2" type="number" step="any" inputmode="decimal" placeholder="m2"></div>';
+                hint.textContent = "按干空气质量对含湿量 W 和比焓 H 线性加权，再用 H 与 W 反查混合点。";
+                fillSelect(document.getElementById("mix-key-1"), "T");
+                fillSelect(document.getElementById("mix-key-2"), "R");
+                bindPair(
+                    document.getElementById("mix-key-1"),
+                    document.getElementById("mix-key-2"),
+                    document.getElementById("mix-hint-1"),
+                    document.getElementById("mix-hint-2")
+                );
+            }
+        }
+
+        function readMixFraction() {
+            var picked = document.querySelector("input[name='mix-mode']:checked");
+            var mode = picked ? picked.value : "f";
+            if (mode === "ratio") return dryAirMassFraction(readFinite("proc-m1", "m1"), readFinite("proc-m2", "m2"));
+            var f = readFinite("proc-f", "质量分数 f");
+            if (!(f > 0 && f < 1)) throw new Error("混合质量分数 f 须在 0 与 1 之间（不含端点）");
+            return f;
+        }
+
+        async function buildProcessPoints(kind, s, pressure) {
+            if (kind === "sens_heat" || kind === "sens_cool") {
+                var tOut = readFinite("proc-t-out", "终点干球");
+                if (s.T === null || s.T === undefined) throw new Error("起点缺少干球温度");
+                if (s.W === null || s.W === undefined) throw new Error("起点缺少含湿量，无法做等湿过程");
+                if (kind === "sens_heat") validateSensibleHeat(s.T, tOut);
+                else {
+                    if (s.Tdp === null || s.Tdp === undefined) throw new Error("起点缺少露点，无法判断等湿冷却");
+                    validateSensibleCool(s.T, s.Tdp, tOut);
+                }
+                var heated = await apiJson(haUrl({ T: tOut, W: s.W }, pressure));
+                assertPlottable(heated.state, "终点");
+                return [makePoint({ T: tOut, W: s.W }, heated.state, kind === "sens_heat" ? "等湿加热" : "等湿冷却", pressure)];
+            }
+            if (kind === "isoth_humid") {
+                if (s.T === null || s.T === undefined) throw new Error("起点缺少干球温度");
+                var modeEl = document.querySelector("input[name='humid-mode']:checked");
+                var mode = modeEl ? modeEl.value : "r";
+                if (mode === "w") {
+                    var wOut = readFinite("proc-w-out", "终点含湿量");
+                    if (s.W === null || s.W === undefined) throw new Error("起点缺少含湿量");
+                    validateIsothermalHumid(s.W, wOut, "W");
+                    var byW = await apiJson(haUrl({ T: s.T, W: wOut }, pressure));
+                    assertPlottable(byW.state, "终点");
+                    return [makePoint({ T: s.T, W: wOut }, byW.state, "等温加湿", pressure)];
+                }
+                var rOut = rhPercentToFraction(readFinite("proc-r-out", "终点相对湿度"));
+                if (s.R === null || s.R === undefined) throw new Error("起点缺少相对湿度");
+                validateIsothermalHumid(s.R, rOut, "R");
+                var byR = await apiJson(haUrl({ T: s.T, R: rOut }, pressure));
+                assertPlottable(byR.state, "终点");
+                return [makePoint({ T: s.T, R: rOut }, byR.state, "等温加湿", pressure)];
+            }
+            if (kind === "adiab_humid") {
+                var rAd = rhPercentToFraction(readFinite("proc-r-out", "终点相对湿度"));
+                if (s.R === null || s.R === undefined) throw new Error("起点缺少相对湿度");
+                validateAdiabaticTarget(s.R, rAd);
+                if (s.Twb !== null && s.Twb !== undefined) {
+                    try {
+                        var alongWb = await apiJson(haUrl({ B: s.Twb, R: rAd }, pressure));
+                        if (alongWb.state && alongWb.state.T !== null && alongWb.state.R !== null && alongWb.state.W !== null) {
+                            return [makePoint({ B: s.Twb, R: rAd }, alongWb.state, "绝热加湿（等湿球）", pressure)];
+                        }
+                    } catch (ignore) {
+                        /* 湿球路径失败，下面回退等焓 */
+                    }
+                }
+                if (s.H === null || s.H === undefined) throw new Error("绝热加湿的等湿球路径失败，且起点缺少比焓，无法回退等焓");
+                var alongH = await apiJson(haUrl({ H: s.H, R: rAd }, pressure));
+                assertPlottable(alongH.state, "绝热加湿终点");
+                return [makePoint({ H: s.H, R: rAd }, alongH.state, "绝热加湿（等焓回退）", pressure)];
+            }
+            if (kind === "cool_dehumid") {
+                var tCoil = readFinite("proc-t-coil", "盘管出风干球");
+                var rRaw = document.getElementById("proc-r-coil").value.trim();
+                var rCoil = rhPercentToFraction(rRaw === "" ? 95 : Number(rRaw));
+                if (s.T === null || s.T === undefined) throw new Error("起点缺少干球温度");
+                validateCoilOutlet(s.T, tCoil);
+                var reheatOn = document.getElementById("proc-reheat").checked;
+                var tReheat = null;
+                if (reheatOn) {
+                    tReheat = readFinite("proc-t-reheat", "再热干球");
+                    validateReheat(tCoil, tReheat);
+                }
+                var coil = await apiJson(haUrl({ T: tCoil, R: rCoil }, pressure));
+                assertPlottable(coil.state, "盘管出风");
+                if (s.W === null || s.W === undefined) throw new Error("起点缺少含湿量，无法判断是否除湿");
+                if (coil.state.W === null || coil.state.W === undefined) throw new Error("盘管出风缺少含湿量");
+                validateDehumid(s.W, coil.state.W);
+                var created = [makePoint({ T: tCoil, R: rCoil }, coil.state, "冷却除湿", pressure)];
+                if (reheatOn) {
+                    if (coil.state.W === null || coil.state.W === undefined) throw new Error("盘管出风缺少含湿量，无法再热");
+                    var reheated = await apiJson(haUrl({ T: tReheat, W: coil.state.W }, pressure));
+                    assertPlottable(reheated.state, "再热点");
+                    created.push(makePoint({ T: tReheat, W: coil.state.W }, reheated.state, "等湿再热", pressure));
+                }
+                return created;
+            }
+            if (kind === "mix") {
+                if (s.W === null || s.W === undefined || s.H === null || s.H === undefined) {
+                    throw new Error("起点缺少含湿量或比焓，无法混合");
+                }
+                var pair = readTwo("mix-key-1", "mix-val-1", "mix-key-2", "mix-val-2");
+                var frac = readMixFraction();
+                var other = await apiJson(haUrl(pair.inputs, pressure));
+                if (!other.state || other.state.W === null || other.state.H === null) {
+                    throw new Error("点②缺少含湿量或比焓，无法混合");
+                }
+                var mixed = mixHumidityEnthalpy(frac, s.W, s.H, other.state.W, other.state.H);
+                var mixState = await apiJson(haUrl({ H: mixed.H, W: mixed.W }, pressure));
+                assertPlottable(mixState.state, "混合点");
+                return [makePoint({ H: mixed.H, W: mixed.W }, mixState.state, "两风混合", pressure)];
+            }
+            throw new Error("未知过程类型");
+        }
+
+        async function runSingle() {
+            showError("single-error", "");
+            var pair = readTwo("single-key-1", "single-val-1", "single-key-2", "single-val-2");
+            var pressure = readPressure();
+            var data = await apiJson(haUrl(pair.inputs, pressure));
+            assertPlottable(data.state, "该状态");
+            renderSingle(data);
+            var spec = data.state.T + "," + data.state.R;
+            await loadChart(document.getElementById("single-chart"), chartUrl(spec, false));
+        }
+
+        async function runProcess() {
+            showError("series-error", "");
+            document.getElementById("series-status").textContent = "";
+            var kind = document.getElementById("proc-type").value;
+            var pressure = readPressure();
+            var startSlots = points.length === 0 ? 1 : 0;
+            if (points.length + startSlots + pointsNeeded(kind) > MAX_POINTS) {
+                throw new Error("加上新点后超过 10 个状态点上限");
+            }
+            var startPoint;
+            if (points.length === 0) {
+                var pair = readTwo("start-key-1", "start-val-1", "start-key-2", "start-val-2");
+                startPoint = { inputs: pair.inputs, display: pair.display, state: null, source: "手填", pressure: null };
+            } else {
+                startPoint = points[points.length - 1];
+            }
+            await ensureState(startPoint, pressure);
+            var created = await buildProcessPoints(kind, startPoint.state, pressure);
+            if (points.length === 0) points.push(startPoint);
+            created.forEach(function (p) { points.push(p); });
+            hideSeriesChart();
+            renderSeries();
+            document.getElementById("series-status").textContent = "已追加" + created.map(function (p) { return p.source; }).join("、") + "。点「生成图」刷新焓湿图。";
+        }
+
+        async function drawSeries() {
+            showError("series-error", "");
+            document.getElementById("series-status").textContent = "";
+            hideSeriesChart();
+            if (!points.length) throw new Error("请先添加至少一个状态点");
+            var pressure = readPressure();
+            var payload = points.map(function (p) { return withPressure(p.inputs, pressure); });
+            var body = await apiJson("/ha/batch", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ points: payload })
+            });
+            var failed = [];
+            body.results.forEach(function (res, i) {
+                if (res.status !== "success" || !res.state || res.state.T === null || res.state.T === undefined || res.state.R === null || res.state.R === undefined) {
+                    failed.push(seriesLabel(i + 1) + "：" + (res.error || "缺少干球温度或相对湿度"));
+                    points[i].state = null;
+                    return;
+                }
+                points[i].state = res.state;
+                points[i].pressure = pressure;
+            });
+            renderSeries();
+            if (failed.length) throw new Error("有状态点未能计算，未出图：\n" + failed.join("\n"));
+            points.forEach(function (p, i) { assertPlottable(p.state, seriesLabel(i + 1) + " "); });
+            var spec = points.map(function (p) { return p.state.T + "," + p.state.R; }).join(";");
+            await loadChart(document.getElementById("series-chart"), chartUrl(spec, true));
+            document.getElementById("series-status").textContent = points.length >= 2 ? "已用 connect=1 连接相邻点。" : "只有一个点，未画折线。";
+        }
+
+        function guard(errorId, fn) {
+            if (busy) return;
+            busy = true;
+            Promise.resolve().then(fn).catch(function (e) {
+                showError(errorId, (e && e.message) ? e.message : "请求失败");
+            }).then(function () { busy = false; });
+        }
+
+        document.getElementById("tab-single").addEventListener("click", function () {
+            document.getElementById("panel-single").hidden = false;
+            document.getElementById("panel-series").hidden = true;
+            document.getElementById("tab-single").classList.add("active");
+            document.getElementById("tab-series").classList.remove("active");
+        });
+        document.getElementById("tab-series").addEventListener("click", function () {
+            document.getElementById("panel-single").hidden = true;
+            document.getElementById("panel-series").hidden = false;
+            document.getElementById("tab-single").classList.remove("active");
+            document.getElementById("tab-series").classList.add("active");
+        });
+        document.getElementById("single-form").addEventListener("submit", function (ev) {
+            ev.preventDefault();
+            guard("single-error", runSingle);
+        });
+        document.getElementById("add-form").addEventListener("submit", function (ev) {
+            ev.preventDefault();
+            guard("series-error", function () {
+                showError("series-error", "");
+                if (points.length >= MAX_POINTS) throw new Error("最多 10 个状态点，与焓湿图上限一致");
+                var pair = readTwo("point-key-1", "point-val-1", "point-key-2", "point-val-2");
+                points.push({ inputs: pair.inputs, display: pair.display, state: null, source: "手填", pressure: null });
+                hideSeriesChart();
+                renderSeries();
+                document.getElementById("series-status").textContent = "已添加 " + seriesLabel(points.length) + "。";
+            });
+        });
+        document.getElementById("clear-points").addEventListener("click", function () {
+            if (!points.length) return;
+            if (!window.confirm("清空全部状态点？")) return;
+            points = [];
+            hideSeriesChart();
+            renderSeries();
+            document.getElementById("series-status").textContent = "已清空。";
+            showError("series-error", "");
+        });
+        document.getElementById("point-list").addEventListener("click", function (ev) {
+            var btn = ev.target.closest("button");
+            if (!btn || btn.disabled) return;
+            var i = Number(btn.getAttribute("data-i"));
+            var act = btn.getAttribute("data-act");
+            if (act === "del") {
+                points.splice(i, 1);
+                hideSeriesChart();
+            }
+            else if (act === "up" && i > 0) {
+                var up = points[i - 1];
+                points[i - 1] = points[i];
+                points[i] = up;
+                hideSeriesChart();
+            } else if (act === "down" && i < points.length - 1) {
+                var down = points[i + 1];
+                points[i + 1] = points[i];
+                points[i] = down;
+                hideSeriesChart();
+            } else return;
+            renderSeries();
+        });
+        document.getElementById("proc-type").addEventListener("change", renderProcFields);
+        document.getElementById("proc-go").addEventListener("click", function () {
+            guard("series-error", runProcess);
+        });
+        document.getElementById("draw-series").addEventListener("click", function () {
+            guard("series-error", drawSeries);
+        });
+
+        [["single-key-1", "single-key-2", "single-hint-1", "single-hint-2"],
+         ["point-key-1", "point-key-2", "point-hint-1", "point-hint-2"],
+         ["start-key-1", "start-key-2", "start-hint-1", "start-hint-2"]].forEach(function (ids) {
+            fillSelect(document.getElementById(ids[0]), "T");
+            fillSelect(document.getElementById(ids[1]), "R");
+            bindPair(
+                document.getElementById(ids[0]),
+                document.getElementById(ids[1]),
+                document.getElementById(ids[2]),
+                document.getElementById(ids[3])
+            );
+        });
+        renderProcFields();
+        renderSeries();
+    }());
+    </script>
+</body>
+</html>

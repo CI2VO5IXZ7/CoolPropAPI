@@ -2,6 +2,7 @@
 
 横轴为含湿量 d (g/kg 干空气)；画布纵坐标 y = h - K·d（K ≈ 2.5，即 r0≈2501 kJ/kg ÷ 1000），
 使等温线近似水平、等焓线向右下斜交（约 135°）。所有数值均来自 CoolProp HAPropsSI，与 /ha 同源。
+可选 connect=1 在相邻状态点之间加折线与箭头，标签改为 A、B、C…；缺省只标点。
 """
 
 import io
@@ -21,7 +22,7 @@ import CoolProp.CoolProp as CP  # noqa: E402
 from matplotlib import font_manager  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.font_manager import FontProperties  # noqa: E402
-from matplotlib.patches import Polygon  # noqa: E402
+from matplotlib.patches import FancyArrowPatch, Polygon  # noqa: E402
 
 logger = logging.getLogger("coolpropapi.chart")
 
@@ -112,6 +113,33 @@ def validate_params(p: float, t_min: float, t_max: float, d_max: float, fmt: str
     if lang not in LANGS:
         raise ChartParamError(f"参数 lang 只能为 {' | '.join(LANGS)}，当前为 '{lang}'")
     return ChartParams(float(p), float(t_min), float(t_max), float(d_max), fmt, int(width), lang)
+
+
+_CONNECT_TRUE = {"1", "true", "yes", "on"}
+_CONNECT_FALSE = {"0", "false", "no", "off"}
+
+
+def parse_connect(raw: Optional[str]) -> bool:
+    """解析折线开关。缺省、空串和 0/false 为不连线；1/true 为连线。"""
+    if raw is None:
+        return False
+    text = str(raw).strip().lower()
+    if text == "" or text in _CONNECT_FALSE:
+        return False
+    if text in _CONNECT_TRUE:
+        return True
+    raise ChartParamError("参数 connect 只能为 0、1、true 或 false")
+
+
+def series_label(index: int, connect: bool = True) -> str:
+    """1 起的点序号。不连线时为 '1'；连线时为 A、B、C…，超过 26 为 P27。"""
+    if isinstance(index, bool) or not isinstance(index, int) or index < 1:
+        raise ChartParamError(f"状态点序号无效: {index}")
+    if not connect:
+        return str(index)
+    if index <= 26:
+        return chr(ord("A") + index - 1)
+    return f"P{index}"
 
 
 def parse_points(raw: Optional[str], params: ChartParams) -> Tuple[Tuple[float, float], ...]:
@@ -237,7 +265,31 @@ def _d_step(d_max: float) -> Tuple[float, float]:
     return 2.0, 10.0
 
 
-def _render(params: ChartParams, points: Sequence[Tuple[float, float]]) -> bytes:
+def _draw_process_line(ax, coords: Sequence[Tuple[float, float]]) -> None:
+    """相邻点之间的深色折线，并在每一段末端加箭头。"""
+    xs = [c[0] for c in coords]
+    ys = [c[1] for c in coords]
+    (line,) = ax.plot(xs, ys, color="#1a1a1a", lw=1.6, zorder=5, solid_capstyle="round")
+    line.set_gid("hd-connect")
+    for (x1, y1), (x2, y2) in zip(coords, coords[1:]):
+        if math.hypot(x2 - x1, y2 - y1) < 1e-9:
+            continue
+        arrow = FancyArrowPatch(
+            (x1, y1),
+            (x2, y2),
+            arrowstyle="-|>",
+            mutation_scale=13,
+            linewidth=1.6,
+            color="#1a1a1a",
+            zorder=5,
+            shrinkA=7,
+            shrinkB=9,
+        )
+        arrow.set_gid("hd-connect-arrow")
+        ax.add_patch(arrow)
+
+
+def _render(params: ChartParams, points: Sequence[Tuple[float, float]], connect: bool = False) -> bytes:
     p, t_min, t_max, d_max = params.p, params.t_min, params.t_max, params.d_max
     geo = _geometry(p, t_min, t_max, d_max)
     lab = LABELS[params.lang]
@@ -338,18 +390,23 @@ def _render(params: ChartParams, points: Sequence[Tuple[float, float]]) -> bytes
                 fontproperties=fp(8, "bold" if sat else "normal"), zorder=4,
                 bbox=dict(boxstyle="round,pad=0.1", fc="white", ec="none", alpha=0.75))
 
-    # 状态点
+    # 状态点。connect 为 False 时标签仍是 1:、2:，不画折线。
+    coords: List[Tuple[float, float]] = []
     for idx, (t, r) in enumerate(points, start=1):
         w = _w(t, r, p)
         d = w * 1000.0
         h = _h_tw(t, w, p)
         y = to_canvas(d, h)
+        coords.append((d, y))
         ax.plot([d], [y], marker="o", ms=6, color="#e67e22", mec="black", mew=0.8, zorder=6)
+        tag = f"{idx}" if not connect else series_label(idx, True)
         ax.annotate(
-            f"{idx}: {t:g}{lab['deg']} / {r * 100:g}%\nd={d:.2f} g/kg, h={h:.1f} kJ/kg",
+            f"{tag}: {t:g}{lab['deg']} / {r * 100:g}%\nd={d:.2f} g/kg, h={h:.1f} kJ/kg",
             xy=(d, y), xytext=(8, 8), textcoords="offset points", fontproperties=fp(8),
             zorder=7, bbox=dict(boxstyle="round,pad=0.25", fc="#fff8e7", ec="#e67e22", lw=0.6),
         )
+    if connect and len(coords) >= 2:
+        _draw_process_line(ax, coords)
 
     ax.set_xticks(np.arange(0, d_max + 1e-9, d_major))
     ax.set_xlabel(lab["x"], fontproperties=fp(10))
@@ -374,15 +431,22 @@ def _render_base(params: ChartParams) -> bytes:
     return _render(params, ())
 
 
-def render_chart(params: ChartParams, points: Sequence[Tuple[float, float]] = ()) -> Tuple[bytes, ChartParams]:
-    """返回 (图像字节, 实际使用的参数)。中文字体缺失时 lang 回退为 en。"""
+def render_chart(
+    params: ChartParams,
+    points: Sequence[Tuple[float, float]] = (),
+    connect: bool = False,
+) -> Tuple[bytes, ChartParams]:
+    """返回 (图像字节, 实际使用的参数)。中文字体缺失时 lang 回退为 en。
+
+    没有状态点时忽略 connect，继续走无点缓存。有点且 connect 为 False 时只标点。
+    """
     eff_lang = resolve_lang(params.lang)
     if eff_lang != params.lang:
         params = ChartParams(params.p, params.t_min, params.t_max, params.d_max, params.fmt, params.width, eff_lang)
     with _render_slots:
         if not points:
             return _render_base(params), params
-        return _render(params, tuple(points)), params
+        return _render(params, tuple(points), connect), params
 
 
 def clear_cache() -> None:
