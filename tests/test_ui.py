@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from psychro_process import (
@@ -52,6 +54,14 @@ UI_MARKERS = [
     "等焓",
     "viewport",
 ]
+
+
+def test_ensure_state_asserts_before_assign():
+    text = (Path(__file__).resolve().parents[1] / "templates" / "ui.html").read_text(encoding="utf-8")
+    start = text.index("async function ensureState")
+    end = text.index("\n        function ", start)
+    body = text[start:end]
+    assert body.index("assertPlottable(") < body.index("point.state =")
 
 
 def test_ui_page_has_controls(client):

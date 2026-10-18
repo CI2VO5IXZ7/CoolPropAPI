@@ -564,9 +564,9 @@
                 return point.state;
             }
             var data = await apiJson(haUrl(point.inputs, pressure));
+            assertPlottable(data.state, "该点");
             point.state = data.state;
             point.pressure = pressure;
-            assertPlottable(point.state, "该点");
             return point.state;
         }
 
