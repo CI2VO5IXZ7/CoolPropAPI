@@ -84,15 +84,32 @@ jobs:
           if [ -f server.pid ]; then kill "$(cat server.pid)" 2>/dev/null || true; fi
           [ -f server.log ] && tail -n 50 server.log || true
 
+  # One native runner per platform. Pull requests build and start the image
+  # but do not push. Other events push each platform by digest; merge publishes
+  # the same tags as before (branch, pr, semver, sha-, latest on the default branch).
   docker:
-    name: Build & push image
+    name: Build image (${{ matrix.platform }})
     needs: smoke-test
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
+
+      - name: Prepare
+        run: |
+          platform="${{ matrix.platform }}"
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+          echo "REGISTRY_IMAGE=${REGISTRY}/$(echo "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
@@ -109,7 +126,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY_IMAGE }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -118,14 +135,143 @@ jobs:
             type=sha,prefix=sha-,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push
+      - name: Build image
+        if: github.event_name == 'pull_request'
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: ${{ matrix.platform }}
+          load: true
+          # The local Docker engine cannot store the default provenance manifest list.
+          provenance: false
+          tags: coolpropapi:ci
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+
+      - name: Run image
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          docker image inspect coolpropapi:ci --format 'architecture={{.Architecture}} os={{.Os}}'
+          docker run -d --name coolpropapi -p 8080:8080 coolpropapi:ci
+          cleanup() {
+            docker logs coolpropapi >&2 || true
+          }
+          trap cleanup EXIT
+          ok=0
+          for i in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:8080/health | tee /tmp/health.json | grep -q '"status":"ok"'; then
+              echo "healthy on ${{ matrix.platform }} after ${i}s"
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "image failed to become healthy on ${{ matrix.platform }}" >&2
+            exit 1
+          fi
+          trap - EXIT
+
+      - name: Build and push by digest
+        id: build
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ env.REGISTRY_IMAGE }}
+          # Keep a flat platform index. Default provenance wraps each digest and
+          # imagetools then publishes an index that arm64 docker pull may skip.
+          provenance: false
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          digest="${{ steps.build.outputs.digest }}"
+          if [ -z "$digest" ]; then
+            echo "build did not return an image digest" >&2
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish multi-arch manifest
+    needs: docker
+    if: github.event_name != 'pull_request' && needs.docker.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Prepare
+        run: |
+          echo "REGISTRY_IMAGE=${REGISTRY}/$(echo "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(*)
+          if [ "${#files[@]}" -ne 2 ]; then
+            echo "expected 2 platform digests, found ${#files[@]}" >&2
+            ls -la >&2
+            exit 1
+          fi
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${REGISTRY_IMAGE}@sha256:%s " "${files[@]}")
+
+      - name: Inspect manifest
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${REGISTRY_IMAGE}:${{ steps.meta.outputs.version }}" | tee "${RUNNER_TEMP}/manifest.txt"
+          grep -q 'linux/amd64' "${RUNNER_TEMP}/manifest.txt"
+          grep -q 'linux/arm64' "${RUNNER_TEMP}/manifest.txt"
